@@ -1,7 +1,5 @@
 # Swap-Mukham
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-
 ## Description
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
@@ -83,6 +81,8 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 - [https://ffmpeg.org/](Ffmpeg)
 - [https://gradio.app/](Gradio)
 
+## Loved my work?
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)
 
 ## License
 
