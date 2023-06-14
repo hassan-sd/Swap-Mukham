@@ -45,10 +45,6 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 - If you prefer a dark theme, append ``/?__theme=dark`` to the end of the URL.
 
 
-## License
-
-This project is licensed under the [MIT License](LICENSE). Make sure to include a link to the license file.
-
 ## Disclaimer
 
 **Disclaimer:**
