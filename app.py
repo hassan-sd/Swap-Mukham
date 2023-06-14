@@ -2,7 +2,7 @@ import os
 import cv2
 import glob
 import time
-import torch
+# import torch #gpu
 import shutil
 import platform
 import tempfile
@@ -21,7 +21,8 @@ STREAMER = None
 
 ### provider
 available_providers = onnxruntime.get_available_providers()
-provider = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+#provider = ["CUDAExecutionProvider", "CPUExecutionProvider"] #gpu
+provider = ["CPUExecutionProvider"]
 
 ### load swapping model
 model_path = os.path.join(
