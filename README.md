@@ -24,7 +24,7 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 
 
 4. Install ffmpeg:
-- ``conda install -c conda-forge ffmpeg``
+- ``conda install -c conda-forge ffmpeg -y``
 
 
 5. Install requirements:
