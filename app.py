@@ -442,7 +442,6 @@ def update_swap_option(value):
 def stop_running():
     if hasattr(STREAMER, "stop"):
         STREAMER.stop()
-        del STREAMER
     return "Cancelled"
 
 
