@@ -47,8 +47,8 @@ def change_analyse_settings(detection_size, detection_threshold):
     FACE_ANALYSER = insightface.app.FaceAnalysis(name="buffalo_l", providers=provider)
     FACE_ANALYSER.prepare(
         ctx_id=0,
-        det_size=(detection_size, detection_size),
-        det_thresh=detection_threshold,
+        det_size=(int(detection_size), int(detection_size)),
+        det_thresh=float(detection_threshold),
     )
     yield f"### \n Applied detection size: {detection_size} & detection threshold: {detection_threshold}"
 
