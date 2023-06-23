@@ -4,7 +4,7 @@
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
 
-![preview](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/354aeeba-0b30-48cd-b6d9-1e359e3940e2)
+![swap_mukham_update](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/07e88efb-0feb-46dc-ba1e-8cb300390745)
 
 
 ## Installation and Usage
@@ -21,25 +21,22 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 3. Create conda environment (Assuming anaconda is already installed):
 - ``conda create -n swapmukham python=3.10 -y``
 - ``conda activate swapmukham``
+- ``conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia``
 
 
-4. Install ffmpeg:
-- ``conda install -c conda-forge ffmpeg -y``
-
-
-5. Install requirements:
+4. Install requirements:
 - ``pip install -r requirements.txt``
 
 
-6. Run the Application:
+5. Run the Application:
 - ``python app.py``
 
 
-7. Access the Application:
+6. Access the Application:
 - Once the application is running, a port number will be displayed, such as http://127.0.0.1:7860/. Open this URL in your browser.
 
 
-8. Dark Theme:
+7. Dark Theme:
 - If you prefer a dark theme, append ``/?__theme=dark`` to the end of the URL.
 
 
