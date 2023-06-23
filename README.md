@@ -45,8 +45,6 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 
 ## Disclaimer
 
-**Disclaimer:**
-
 We would like to emphasize that our deep fake software is intended for responsible and ethical use only. We must stress that **users are solely responsible for their actions when using our software**.
 
 1. Intended Usage:
@@ -76,10 +74,10 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 
 ## Acknowledgements
 
-- [https://github.com/s0md3v/roop](Roop)
-- [https://github.com/deepinsight](Insightface)
-- [https://ffmpeg.org/](Ffmpeg)
-- [https://gradio.app/](Gradio)
+- [Roop](https://github.com/s0md3v/roop)
+- [Insightface](https://github.com/deepinsight)
+- [Ffmpeg](https://ffmpeg.org/)
+- [Gradio](https://gradio.app/)
 
 ## Loved my work?
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)
