@@ -4,7 +4,7 @@
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
 
-![swap_mukham_update](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/07e88efb-0feb-46dc-ba1e-8cb300390745)
+![swapmukham_preview](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/f8b00485-bc51-4cab-838a-a9b84bae08e2)
 
 
 ## Installation and Usage
