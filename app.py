@@ -91,13 +91,13 @@ def swap_face(source_face, target_faces, target, condition, age):
     for target_face in target_faces:
         if condition == "All face":
             swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
-        elif condition == "Age less than" and face["age"] < age:
+        elif condition == "Age less than" and target_face["age"] < age:
             swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
-        elif condition == "Age greater than" and face["age"] > age:
+        elif condition == "Age greater than" and target_face["age"] > age:
             swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
-        elif condition == "All Male" and face["gender"] == 1:
+        elif condition == "All Male" and target_face["gender"] == 1:
             swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
-        elif condition == "All Female" and face["gender"] == 0:
+        elif condition == "All Female" and target_face["gender"] == 0:
             swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
 
     return swapped
@@ -124,7 +124,9 @@ def swap_specific(source_specifics, target_faces, target, threshold=0.6):
 def trim_video(video_path, output_path, start_frame, stop_frame):
     video_name, video_extension = os.path.splitext(os.path.basename(video_path))
     trimmed_video_filename = video_name + "_trimmed" + video_extension
-    trimmed_video_file_path = os.path.join(output_path, trimmed_video_filename)
+    temp_path = os.path.join(output_path, "trim")
+    os.makedirs(temp_path, exist_ok=True)
+    trimmed_video_file_path = os.path.join(temp_path, trimmed_video_filename)
 
     video = VideoFileClip(video_path)
     fps = video.fps
@@ -138,7 +140,7 @@ def trim_video(video_path, output_path, start_frame, stop_frame):
     trimmed_video.close()
     video.close()
 
-    return gr.Video.update(value=trimmed_video_file_path)
+    return trimmed_video_file_path
 
 
 def open_directory(path=None):
@@ -196,7 +198,6 @@ class ProcessBar:
         self.bar[int(index / total * self.bar_length)] = self.after
         info_text = f"### \n({index+1}/{total}) {''.join(self.bar)} "
         info_text += f"(ETR: {int(estimated_remaining_time // 60)} min {int(estimated_remaining_time % 60)} sec)"
-
         return info_text
 
 
@@ -208,6 +209,7 @@ def process(
     source_path,
     output_path,
     output_name,
+    keep_output_sequence,
     condition,
     age,
     distance,
@@ -286,7 +288,7 @@ def process(
         yield f"Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
 
     elif input_type == "Video":
-        temp_path = os.path.join(output_path, output_name)
+        temp_path = os.path.join(output_path, output_name, "sequence")
         os.makedirs(temp_path, exist_ok=True)
 
         video_clip = VideoFileClip(video_path)
@@ -295,7 +297,7 @@ def process(
         audio_clip = video_clip.audio if video_clip.audio is not None else None
 
         image_sequence = []
-        process_bar = ProcessBar(20, video_clip.reader.nframes)
+        process_bar = ProcessBar(30, video_clip.reader.nframes)
 
         for i, frame in enumerate(video_clip.iter_frames()):
             swapped = frame
@@ -331,8 +333,8 @@ def process(
         edited_video_clip.close()
         video_clip.close()
 
-        yield "### \nRemoving temporary files...", *ui_before()
-        if os.path.exists(temp_path):
+        if os.path.exists(temp_path) and not keep_output_sequence:
+            yield "### \nRemoving temporary files...", *ui_before()
             shutil.rmtree(temp_path)
 
         WORKSPACE = output_path
@@ -341,7 +343,7 @@ def process(
         tot_exec_time = time.time() - start_time
         _min, _sec = divmod(tot_exec_time, 60)
 
-        yield f"Completed in {int(_min)} min {int(_sec)} sec.", *ui_after_vid()
+        yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after_vid()
 
     elif input_type == "Directory":
         source = cv2.imread(source_path)
@@ -388,7 +390,7 @@ def process(
         tot_exec_time = time.time() - start_time
         _min, _sec = divmod(tot_exec_time, 60)
 
-        yield f"Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
+        yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
 
     elif input_type == "Stream":
         yield "Starting...", *ui_before()
@@ -472,42 +474,35 @@ def video_changed(video_path):
     sliders_update = gr.Slider.update
     button_update = gr.Button.update
     number_update = gr.Number.update
-    text_update = gr.Markdown.update
 
     if video_path is None:
         return (
-            sliders_update(maximum=1, value=0, interactive=False),
-            sliders_update(maximum=1, value=1, interactive=False),
+            sliders_update(minimum=0, maximum=0, value=0),
+            sliders_update(minimum=1, maximum=1, value=1),
             number_update(value=1),
-            text_update(value="### [00:00:00] to [00:00:00]"),
-            button_update(interactive=False),
         )
     try:
-        video = cv2.VideoCapture(video_path)
-        fps = video.get(cv2.CAP_PROP_FPS)
-        total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-        video.release()
+        clip = VideoFileClip(video_path)
+        fps = clip.fps
+        total_frames = clip.reader.nframes
+        clip.close()
         return (
-            sliders_update(maximum=total_frames, value=0, interactive=True),
-            sliders_update(maximum=total_frames, value=total_frames, interactive=True),
-            number_update(value=fps),
-            text_update(
-                value=f"### [00:00:00] to [{datetime.timedelta(seconds=int(total_frames/fps))}]"
+            sliders_update(minimum=0, maximum=total_frames, value=0, interactive=True),
+            sliders_update(
+                minimum=0, maximum=total_frames, value=total_frames, interactive=True
             ),
-            button_update(interactive=True),
+            number_update(value=fps),
         )
     except:
         return (
-            sliders_update(value=0, interactive=False),
-            sliders_update(value=0, interactive=False),
+            sliders_update(value=0),
+            sliders_update(value=0),
             number_update(value=1),
-            text_update(value="### [00:00:00] to [00:00:00]"),
-            button_update(interactive=False),
         )
 
 
 def analyse_settings_changed(detect_condition, detection_size, detection_threshold):
-    yield "### \n Applying new values..."
+    yield "### \n ⌛ Applying new values..."
     global FACE_ANALYSER
     global DETECT_CONDITION
     DETECT_CONDITION = detect_condition
@@ -517,7 +512,7 @@ def analyse_settings_changed(detect_condition, detection_size, detection_thresho
         det_size=(int(detection_size), int(detection_size)),
         det_thresh=float(detection_threshold),
     )
-    yield f"### \n Applied detect condition:{detect_condition}, detection size: {detection_size}, detection threshold: {detection_threshold}"
+    yield f"### \n ✔️ Applied detect condition:{detect_condition}, detection size: {detection_size}, detection threshold: {detection_threshold}"
 
 
 def stop_running():
@@ -528,22 +523,79 @@ def stop_running():
     return "Cancelled"
 
 
+def slider_changed(show_frame, video_path, frame_index):
+    if not show_frame:
+        return None, None
+    if video_path is None:
+        return None, None
+    clip = VideoFileClip(video_path)
+    frame = clip.get_frame(frame_index / clip.fps)
+    frame_array = np.array(frame)
+    clip.close()
+    return gr.Image.update(value=frame_array, visible=True), gr.Video.update(
+        visible=False
+    )
+
+
+def trim_and_reload(video_path, output_path, output_name, start_frame, stop_frame):
+    yield video_path, f"### \n ⌛ Trimming video frame {start_frame} to {stop_frame}..."
+    try:
+        output_path = os.path.join(output_path, output_name)
+        trimmed_video = trim_video(video_path, output_path, start_frame, stop_frame)
+        yield trimmed_video, "### \n ✔️ Video trimmed and reloaded."
+    except Exception as e:
+        print(e)
+        yield video_path, "### \n ❌ Video trimming failed. See console for more info."
+
+
+css = """
+footer{display:none !important}
+"""
+
 ### Gradio interface
-with gr.Blocks(css="footer{display:none !important}") as interface:
+with gr.Blocks(css=css) as interface:
     gr.Markdown("# 🗿 Swap Mukham")
     gr.Markdown("### Face swap app based on insightface inswapper.")
     with gr.Row():
         with gr.Row():
             with gr.Column(scale=0.4):
-                swap_option = gr.Radio(
-                    swap_options_list,
-                    label="📄 Swap Condition",
-                    value=swap_options_list[0],
-                    interactive=True,
-                )
-                age = gr.Number(
-                    value=25, label="Value", interactive=True, visible=False
-                )
+                with gr.Tab("📄 Swap Condition"):
+                    swap_option = gr.Radio(
+                        swap_options_list,
+                        show_label=False,
+                        value=swap_options_list[0],
+                        interactive=True,
+                    )
+                    age = gr.Number(
+                        value=25, label="Value", interactive=True, visible=False
+                    )
+
+                with gr.Tab("🎚️ Detection Settings"):
+                    detect_condition_dropdown = gr.Dropdown(
+                        detect_conditions,
+                        label="Condition",
+                        value=DETECT_CONDITION,
+                        interactive=True,
+                        info="This condition is only used when multiple faces are detected on source or specific image.",
+                    )
+                    detection_size = gr.Number(
+                        label="Detection Size", value=640, interactive=True
+                    )
+                    detection_threshold = gr.Number(
+                        label="Detection Threshold", value=0.5, interactive=True
+                    )
+                    apply_detection_settings = gr.Button("Apply settings")
+
+                with gr.Tab("📤 Output Settings"):
+                    output_directory = gr.Text(
+                        label="Output Directory", value=os.getcwd(), interactive=True
+                    )
+                    output_name = gr.Text(
+                        label="Output Name", value="Result", interactive=True
+                    )
+                    keep_output_sequence = gr.Checkbox(
+                        label="Keep output sequence", value=False, interactive=True
+                    )
 
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True
@@ -581,12 +633,21 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
                         )
 
                     with gr.Box(visible=True) as input_video_group:
-                        video_input = gr.Video(label="Target Video", interactive=True)
+                        video_input = gr.Text(
+                            label="Target Video Path", interactive=True
+                        )
                         with gr.Accordion("✂️ Trim video", open=False):
                             with gr.Column():
-                                trim_text = gr.Markdown(
-                                    value="### [00:00:00] to [00:00:00]"
-                                )
+                                with gr.Row():
+                                    set_slider_range_btn = gr.Button(
+                                        "Set frame range", interactive=True
+                                    )
+                                    show_trim_preview_btn = gr.Checkbox(
+                                        label="Show frame when slider change",
+                                        value=True,
+                                        interactive=True,
+                                    )
+
                                 video_fps = gr.Number(
                                     value=30,
                                     interactive=False,
@@ -598,7 +659,7 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
                                     maximum=1,
                                     value=0,
                                     step=1,
-                                    interactive=False,
+                                    interactive=True,
                                     label="Start Frame",
                                     info="",
                                 )
@@ -607,47 +668,23 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
                                     maximum=1,
                                     value=1,
                                     step=1,
-                                    interactive=False,
+                                    interactive=True,
                                     label="End Frame",
                                     info="",
                                 )
                             trim_and_reload_btn = gr.Button(
-                                "Trim and Reload", interactive=False
+                                "Trim and Reload", interactive=True
                             )
 
                     with gr.Box(visible=False) as input_directory_group:
                         direc_input = gr.Text(label="Path", interactive=True)
 
             with gr.Column(scale=0.6):
-                with gr.Accordion("🎚️ Detection Settings", open=False):
-                    detect_condition_dropdown = gr.Dropdown(
-                        detect_conditions,
-                        label="Condition",
-                        value=DETECT_CONDITION,
-                        interactive=True,
-                        info="This condition is only used when multiple faces are detected on source or specific image.",
-                    )
-                    detection_size = gr.Number(
-                        label="Detection Size", value=640, interactive=True
-                    )
-                    detection_threshold = gr.Number(
-                        label="Detection Threshold", value=0.5, interactive=True
-                    )
-                    apply_detection_settings = gr.Button("Apply settings")
-
-                with gr.Accordion("📤 Output Settings", open=False):
-                    output_directory = gr.Text(
-                        label="Output Directory", value=os.getcwd(), interactive=True
-                    )
-                    output_name = gr.Text(
-                        label="Output Name", value="Result", interactive=True
-                    )
+                info = gr.Markdown(value="...")
 
                 with gr.Row():
                     swap_button = gr.Button("✨ Swap", variant="primary")
                     cancel_button = gr.Button("⛔ Cancel")
-
-                info = gr.Markdown(show_label=False, visible=True)
 
                 preview_image = gr.Image(label="Output", interactive=False)
                 preview_video = gr.Video(
@@ -658,34 +695,38 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
                     output_directory_button = gr.Button("📂", interactive=False)
                     output_video_button = gr.Button("🎬", interactive=False)
 
-                gr.Markdown(
-                    '[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)'
-                )
-                gr.Markdown(
-                    "### [Source code](https://github.com/harisreedhar/Swap-Mukham) . [Disclaimer](https://github.com/harisreedhar/Swap-Mukham#disclaimer) . [Gradio](https://gradio.app/)"
-                )
+                with gr.Column():
+                    gr.Markdown(
+                        '[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)'
+                    )
+                    gr.Markdown(
+                        "### [Source code](https://github.com/harisreedhar/Swap-Mukham) . [Disclaimer](https://github.com/harisreedhar/Swap-Mukham#disclaimer) . [Gradio](https://gradio.app/)"
+                    )
 
-    video_input.change(
+    set_slider_range_event = set_slider_range_btn.click(
         video_changed,
         inputs=[video_input],
-        outputs=[start_frame, end_frame, video_fps, trim_text, trim_and_reload_btn],
+        outputs=[start_frame, end_frame, video_fps],
     )
 
-    trim_and_reload_btn.click(
-        fn=trim_video,
-        inputs=[video_input, output_directory, start_frame, end_frame],
-        outputs=[video_input],
+    trim_and_reload_event = trim_and_reload_btn.click(
+        fn=trim_and_reload,
+        inputs=[video_input, output_directory, output_name, start_frame, end_frame],
+        outputs=[video_input, info],
     )
 
-    get_timecode = lambda val: str(datetime.timedelta(seconds=int(val)))
-    slider_fn = lambda st, en, fps: gr.Markdown.update(
-        value=f"### [{get_timecode(st/fps)}] to [{get_timecode(en/fps)}]"
+    start_frame_event = start_frame.release(
+        fn=slider_changed,
+        inputs=[show_trim_preview_btn, video_input, start_frame],
+        outputs=[preview_image, preview_video],
+        show_progress=False,
     )
-    start_frame.release(
-        fn=slider_fn, inputs=[start_frame, end_frame, video_fps], outputs=[trim_text]
-    )
-    end_frame.release(
-        fn=slider_fn, inputs=[start_frame, end_frame, video_fps], outputs=[trim_text]
+
+    end_frame_event = end_frame.release(
+        fn=slider_changed,
+        inputs=[show_trim_preview_btn, video_input, end_frame],
+        outputs=[preview_image, preview_video],
+        show_progress=False,
     )
 
     input_type.change(
@@ -698,6 +739,7 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
         inputs=[swap_option],
         outputs=[age, specific_face, source_image_input],
     )
+
     apply_detection_settings.click(
         analyse_settings_changed,
         inputs=[detect_condition_dropdown, detection_size, detection_threshold],
@@ -718,6 +760,7 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
         source_image_input,
         output_directory,
         output_name,
+        keep_output_sequence,
         swap_option,
         age,
         distance_slider,
@@ -732,10 +775,22 @@ with gr.Blocks(css="footer{display:none !important}") as interface:
         preview_video,
     ]
 
-    swap_event = swap_button.click(fn=process, inputs=swap_inputs, outputs=swap_outputs)
+    swap_event = swap_button.click(
+        fn=process, inputs=swap_inputs, outputs=swap_outputs, show_progress=False
+    )
 
     cancel_button.click(
-        fn=stop_running, inputs=None, outputs=[info], cancels=[swap_event]
+        fn=stop_running,
+        inputs=None,
+        outputs=[info],
+        cancels=[
+            swap_event,
+            trim_and_reload_event,
+            set_slider_range_event,
+            start_frame_event,
+            end_frame_event,
+        ],
+        show_progress=False,
     )
     output_directory_button.click(
         lambda: open_directory(path=WORKSPACE), inputs=None, outputs=None
