@@ -74,6 +74,7 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 
 - [Roop](https://github.com/s0md3v/roop)
 - [Insightface](https://github.com/deepinsight)
+- [Gfpgan](https://github.com/TencentARC/GFPGAN)
 - [Ffmpeg](https://ffmpeg.org/)
 - [Gradio](https://gradio.app/)
 
