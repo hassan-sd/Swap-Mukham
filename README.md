@@ -4,7 +4,8 @@
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
 
-![swapmukham_preview](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/f8b00485-bc51-4cab-838a-a9b84bae08e2)
+![swapmukham_faceenhanced](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/c0c34eac-6b48-4c2f-9222-a85e8fb76b43)
+
 
 
 ## Installation and Usage
@@ -15,7 +16,8 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 
 
 2. Download model from the link and place it in root directory.
-- ``https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx``
+- [inswapper_128.onnx]("https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx")
+- [GFPGANv1.4.pth]("https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth")
 
 
 3. Create conda environment (Assuming anaconda is already installed):
