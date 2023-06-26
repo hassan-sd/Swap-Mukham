@@ -4,6 +4,7 @@ import glob
 import time
 import torch
 import shutil
+import gfpgan
 import platform
 import datetime
 import subprocess
@@ -12,6 +13,7 @@ import onnxruntime
 import numpy as np
 import gradio as gr
 from threading import Thread
+from insightface.utils import face_align
 from moviepy.editor import VideoFileClip, ImageSequenceClip
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
@@ -22,21 +24,36 @@ STREAMER = None
 DETECT_CONDITION = "left most"
 NUM_OF_SRC_SPECIFIC = 10
 
-### provider
-provider = ["CPUExecutionProvider"]
+FACE_SWAPPER = None
+FACE_ANALYSER = None
+FACE_ENHANCER = None
+
+PROVIDER = ["CPUExecutionProvider"]
 available_providers = onnxruntime.get_available_providers()
 if "CUDAExecutionProvider" in available_providers:
-    provider = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    PROVIDER = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
-### load swapping model
-model_path = os.path.join(
-    os.path.abspath(os.path.dirname(__file__)), "inswapper_128.onnx"
-)
-MODEL = insightface.model_zoo.get_model(model_path, providers=provider)
 
-### load face analyser
-FACE_ANALYSER = insightface.app.FaceAnalysis(name="buffalo_l", providers=provider)
-FACE_ANALYSER.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.5)
+def load_face_analyser_model(name="buffalo_l"):
+    global FACE_ANALYSER
+    if FACE_ANALYSER is None:
+        FACE_ANALYSER = insightface.app.FaceAnalysis(name=name, providers=PROVIDER)
+        FACE_ANALYSER.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.5)
+
+
+def load_face_swapper_model(name="inswapper_128.onnx"):
+    global FACE_SWAPPER
+    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
+    if FACE_SWAPPER is None:
+        FACE_SWAPPER = insightface.model_zoo.get_model(path, providers=PROVIDER)
+
+
+def load_face_enhancer_model(name="GFPGANv1.4.pth"):
+    global FACE_ENHANCER
+    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
+    if FACE_ENHANCER is None:
+        FACE_ENHANCER = gfpgan.GFPGANer(model_path=path, upscale=1)
+
 
 detect_conditions = [
     "left most",
@@ -85,26 +102,79 @@ swap_options_list = [
 ]
 
 
-def swap_face(source_face, target_faces, target, condition, age):
-    swapped = target.copy()
+def swap_face(whole_img, target_face, source_face, face_enhance=False):
+    if not face_enhance or FACE_ENHANCER is None:
+        return FACE_SWAPPER.get(whole_img, target_face, source_face, paste_back=True)
+
+    bgr_fake, M = FACE_SWAPPER.get(
+        whole_img, target_face, source_face, paste_back=False
+    )
+    _, bgr_fake, _ = FACE_ENHANCER.enhance(bgr_fake, paste_back=True, has_aligned=True)
+    bgr_fake = bgr_fake[0]
+
+    aimg, _ = face_align.norm_crop2(whole_img, target_face.kps, image_size=512)
+    IM = cv2.invertAffineTransform(M / 0.25)  # 128/512 = 0.25
+    img_white = np.full((aimg.shape[0], aimg.shape[1]), 255, dtype=np.float32)
+    bgr_fake = cv2.warpAffine(
+        bgr_fake, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
+    )
+    img_white = cv2.warpAffine(
+        img_white, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
+    )
+    img_white[img_white > 20] = 255
+    img_mask = img_white
+    mask_h_inds, mask_w_inds = np.where(img_mask == 255)
+    mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
+    mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
+    mask_size = int(np.sqrt(mask_h * mask_w))
+
+    k = max(mask_size // 10, 10)
+    img_mask = cv2.erode(img_mask, np.ones((k, k), np.uint8), iterations=1)
+
+    k = max(mask_size // 20, 5)
+    kernel_size = (k, k)
+    blur_size = tuple(2 * i + 1 for i in kernel_size)
+    img_mask = cv2.GaussianBlur(img_mask, blur_size, 0) / 255
+
+    img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
+    fake_merged = img_mask * bgr_fake + (1 - img_mask) * whole_img.astype(np.float32)
+    return fake_merged.astype(np.uint8)
+
+
+def swap_face_with_condition(
+    source_face, target_faces, whole_img, condition, age, face_enhance=False
+):
+    swapped = whole_img.copy()
 
     for target_face in target_faces:
         if condition == "All face":
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
         elif condition == "Age less than" and target_face["age"] < age:
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
         elif condition == "Age greater than" and target_face["age"] > age:
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
         elif condition == "All Male" and target_face["gender"] == 1:
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
         elif condition == "All Female" and target_face["gender"] == 0:
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
 
     return swapped
 
 
-def swap_specific(source_specifics, target_faces, target, threshold=0.6):
-    swapped = target.copy()
+def swap_specific(
+    source_specifics, target_faces, whole_img, threshold=0.6, face_enhance=False
+):
+    swapped = whole_img.copy()
 
     for source_face, specific_face in source_specifics:
         specific_embed = specific_face["embedding"]
@@ -116,7 +186,9 @@ def swap_specific(source_specifics, target_faces, target, threshold=0.6):
             cosine_distance = 1 - np.dot(specific_embed, target_embed)
             if cosine_distance > threshold:
                 continue
-            swapped = MODEL.get(swapped, target_face, source_face, paste_back=True)
+            swapped = swap_face(
+                swapped, target_face, source_face, face_enhance=face_enhance
+            )
 
     return swapped
 
@@ -213,6 +285,7 @@ def process(
     condition,
     age,
     distance,
+    face_enhance,
     *specifics,
 ):
     global WORKSPACE
@@ -250,7 +323,17 @@ def process(
     sources = specifics[:half]
     specifics = specifics[half:]
 
-    yield "### \n Analysing Face...", *ui_before()
+    yield "### \n ⌛ Loading face analyser model...", *ui_before()
+    load_face_analyser_model()
+
+    yield "### \n ⌛ Loading face swapper model...", *ui_before()
+    load_face_swapper_model()
+
+    if face_enhance:
+        yield "### \n ⌛ Loading face enhancer model...", *ui_before()
+        load_face_enhancer_model()
+
+    yield "### \n ⌛ Analysing Face...", *ui_before()
 
     analysed_source_specific = []
     if condition == "Specific Face":
@@ -269,11 +352,20 @@ def process(
         analysed_target = analyse_face(target, return_single_face=False)
         if condition == "Specific Face":
             swapped = swap_specific(
-                analysed_source_specific, analysed_target, target, threshold=distance
+                analysed_source_specific,
+                analysed_target,
+                target,
+                threshold=distance,
+                face_enhance=face_enhance,
             )
         else:
-            swapped = swap_face(
-                analysed_source, analysed_target, target, condition, age
+            swapped = swap_face_with_condition(
+                analysed_source,
+                analysed_target,
+                target,
+                condition,
+                age,
+                face_enhance=face_enhance,
             )
 
         filename = os.path.join(output_path, output_name + ".png")
@@ -305,11 +397,20 @@ def process(
 
             if condition == "Specific Face":
                 swapped = swap_specific(
-                    analysed_source_specific, analysed_target, frame, threshold=distance
+                    analysed_source_specific,
+                    analysed_target,
+                    frame,
+                    threshold=distance,
+                    face_enhance=face_enhance,
                 )
             else:
-                swapped = swap_face(
-                    analysed_source, analysed_target, frame, condition, age
+                swapped = swap_face_with_condition(
+                    analysed_source,
+                    analysed_target,
+                    frame,
+                    condition,
+                    age,
+                    face_enhance=face_enhance,
                 )
 
             image_path = os.path.join(temp_path, f"frame_{i}.png")
@@ -320,7 +421,7 @@ def process(
             PREVIEW = swapped
             yield info_text, *ui_before()
 
-        yield "### \nMerging...", *ui_before()
+        yield "### \n ⌛ Merging...", *ui_before()
         edited_video_clip = ImageSequenceClip(image_sequence, fps=fps)
 
         if audio_clip is not None:
@@ -334,7 +435,7 @@ def process(
         video_clip.close()
 
         if os.path.exists(temp_path) and not keep_output_sequence:
-            yield "### \nRemoving temporary files...", *ui_before()
+            yield "### \n ⌛ Removing temporary files...", *ui_before()
             shutil.rmtree(temp_path)
 
         WORKSPACE = output_path
@@ -372,15 +473,21 @@ def process(
                     analysed_target,
                     target,
                     threshold=distance,
+                    face_enhance=face_enhance,
                 )
             else:
-                swapped = swap_face(
-                    analysed_source, analysed_target, target, condition, age
+                swapped = swap_face_with_condition(
+                    analysed_source,
+                    analysed_target,
+                    target,
+                    condition,
+                    age,
+                    face_enhance=face_enhance,
                 )
 
             filename = os.path.join(temp_path, os.path.basename(file_path))
             cv2.imwrite(filename, swapped)
-            info_text = f"### \n Processing file {i+1} of {files_length}"
+            info_text = f"### \n ⌛ Processing file {i+1} of {files_length}"
             PREVIEW = swapped[:, :, ::-1]
             yield info_text, *ui_before()
 
@@ -393,7 +500,7 @@ def process(
         yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
 
     elif input_type == "Stream":
-        yield "Starting...", *ui_before()
+        yield "### \n ⌛ Starting...", *ui_before()
         source = cv2.imread(source_path)
         source = analyse_face(source, return_single_face=True)
 
@@ -410,14 +517,16 @@ def process(
                         analysed_target,
                         target,
                         threshold=distance,
+                        face_enhance=face_enhance,
                     )
                 else:
-                    swapped = swap_face(
+                    swapped = swap_face_with_condition(
                         analysed_source,
                         analysed_target,
                         target,
                         condition,
                         age,
+                        face_enhance=face_enhance,
                     )
                 PREVIEW = swapped[:, :, ::-1]
                 yield f"Streaming...", *ui_before()
@@ -597,6 +706,11 @@ with gr.Blocks(css=css) as interface:
                         label="Keep output sequence", value=False, interactive=True
                     )
 
+                with gr.Tab("🪄 Other Settings"):
+                    enable_face_enhance = gr.Checkbox(
+                        label="Enhance face (GFPGAN)", value=False, interactive=True
+                    )
+
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True
                 )
@@ -764,6 +878,7 @@ with gr.Blocks(css=css) as interface:
         swap_option,
         age,
         distance_slider,
+        enable_face_enhance,
         *src_specific_inputs,
     ]
 
