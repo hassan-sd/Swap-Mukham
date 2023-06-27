@@ -194,8 +194,8 @@ def swap_specific(
 
 
 def trim_video(video_path, output_path, start_frame, stop_frame):
-    video_name, video_extension = os.path.splitext(os.path.basename(video_path))
-    trimmed_video_filename = video_name + "_trimmed" + video_extension
+    video_name, _ = os.path.splitext(os.path.basename(video_path))
+    trimmed_video_filename = video_name + "_trimmed" + ".mp4"
     temp_path = os.path.join(output_path, "trim")
     os.makedirs(temp_path, exist_ok=True)
     trimmed_video_file_path = os.path.join(temp_path, trimmed_video_filename)
@@ -268,7 +268,7 @@ class ProcessBar:
         estimated_remaining_time = remaining_iterations * average_time_per_iteration
 
         self.bar[int(index / total * self.bar_length)] = self.after
-        info_text = f"### \n({index+1}/{total}) {''.join(self.bar)} "
+        info_text = f"({index+1}/{total}) {''.join(self.bar)} "
         info_text += f"(ETR: {int(estimated_remaining_time // 60)} min {int(estimated_remaining_time % 60)} sec)"
         return info_text
 
@@ -386,14 +386,29 @@ def process(
         video_clip = VideoFileClip(video_path)
         duration = video_clip.duration
         fps = video_clip.fps
-        audio_clip = video_clip.audio if video_clip.audio is not None else None
+        total_frames = video_clip.reader.nframes
+
+        analysed_targets = []
+        process_bar = ProcessBar(30, total_frames)
+        yield "### \n ⌛ Analysing...", *ui_before()
+        for i, frame in enumerate(video_clip.iter_frames()):
+            analysed_targets.append(analyse_face(frame, return_single_face=False))
+            info_text = "Analysing Faces || "
+            info_text += process_bar.get(i)
+            print("\033[1A\033[K", end="", flush=True)
+            print(info_text)
+            if i % 10 == 0:
+                yield "### \n" + info_text, *ui_before()
+        video_clip.close()
 
         image_sequence = []
-        process_bar = ProcessBar(30, video_clip.reader.nframes)
-
+        video_clip = VideoFileClip(video_path)
+        audio_clip = video_clip.audio if video_clip.audio is not None else None
+        process_bar = ProcessBar(30, total_frames)
+        yield "### \n ⌛ Swapping...", *ui_before()
         for i, frame in enumerate(video_clip.iter_frames()):
             swapped = frame
-            analysed_target = analyse_face(frame, return_single_face=False)
+            analysed_target = analysed_targets[i]
 
             if condition == "Specific Face":
                 swapped = swap_specific(
@@ -417,9 +432,13 @@ def process(
             cv2.imwrite(image_path, swapped[:, :, ::-1])
             image_sequence.append(image_path)
 
-            info_text = process_bar.get(i)
-            PREVIEW = swapped
-            yield info_text, *ui_before()
+            info_text = "Swapping Faces || "
+            info_text += process_bar.get(i)
+            print("\033[1A\033[K", end="", flush=True)
+            print(info_text)
+            if i % 6 == 0:
+                PREVIEW = swapped
+                yield "### \n" + info_text, *ui_before()
 
         yield "### \n ⌛ Merging...", *ui_before()
         edited_video_clip = ImageSequenceClip(image_sequence, fps=fps)
