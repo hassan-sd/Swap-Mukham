@@ -55,11 +55,11 @@ MASK_INCLUDE = [
     "L-Eye",
     "R-Eye",
     "Nose",
+    "Mouth",
     "L-Lip",
-    "U-Lip",
-    "Chin",
+    "U-Lip"
 ]
-MASK_EXCLUDE = ["R-Ear", "L-Ear"]
+MASK_EXCLUDE = ["R-Ear", "L-Ear", "Hair", "Hat"]
 MASK_BLUR = 25
 
 FACE_SWAPPER = None
@@ -86,7 +86,6 @@ else:
 
 
 ## ------------------------------ LOAD MODELS ------------------------------
-
 
 def load_face_analyser_model(name="buffalo_l"):
     global FACE_ANALYSER
@@ -115,7 +114,7 @@ def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
     global FACE_PARSER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_PARSER is None:
-        FACE_PARSER = init_parser(name)
+        FACE_PARSER = init_parser(name, use_cuda=USE_CUDA)
 
 
 load_face_analyser_model()
@@ -627,7 +626,7 @@ with gr.Blocks(css=css) as interface:
                         enable_face_parser_mask = gr.Checkbox(
                             label="Enable Face Parsing",
                             value=False,
-                            interactive=USE_CUDA,
+                            interactive=True,
                         )
 
                         mask_include = gr.Dropdown(
@@ -635,20 +634,20 @@ with gr.Blocks(css=css) as interface:
                             value=MASK_INCLUDE,
                             multiselect=True,
                             label="Include",
-                            interactive=USE_CUDA,
+                            interactive=True,
                         )
                         mask_exclude = gr.Dropdown(
                             mask_regions.keys(),
                             value=MASK_EXCLUDE,
                             multiselect=True,
                             label="Exclude",
-                            interactive=USE_CUDA,
+                            interactive=True,
                         )
                         mask_blur = gr.Number(
                             label="Blur Mask",
                             value=MASK_BLUR,
                             minimum=0,
-                            interactive=USE_CUDA,
+                            interactive=True,
                         )
 
                 source_image_input = gr.Image(

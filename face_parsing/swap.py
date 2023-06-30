@@ -8,25 +8,38 @@ from .model import BiSeNet
 mask_regions = {
     "Background":0,
     "Skin":1,
-    "R-Eyebrow":2,
-    "L-Eyebrow":3,
-    "R-Eye":4,
-    "L-Eye":5,
-    "R-Ear":7,
-    "L-Ear":8,
+    "L-Eyebrow":2,
+    "R-Eyebrow":3,
+    "L-Eye":4,
+    "R-Eye":5,
+    "Eye-G":6,
+    "L-Ear":7,
+    "R-Ear":8,
+    "Ear-R":9,
     "Nose":10,
-    "L-Lip":11,
+    "Mouth":11,
     "U-Lip":12,
-    "Chin":13,
-    "Neck":14
+    "L-Lip":13,
+    "Neck":14,
+    "Neck-L":15,
+    "Cloth":16,
+    "Hair":17,
+    "Hat":18
 }
 
+run_with_cuda = False
 
-def init_parser(pth_path):
+def init_parser(pth_path, use_cuda=False):
+    global run_with_cuda
+    run_with_cuda = use_cuda
+
     n_classes = 19
     net = BiSeNet(n_classes=n_classes)
-    net.cuda()
-    net.load_state_dict(torch.load(pth_path))
+    if run_with_cuda:
+        net.cuda()
+        net.load_state_dict(torch.load(pth_path))
+    else:
+        net.load_state_dict(torch.load(pth_path, map_location=torch.device('cpu')))
     net.eval()
     return net
 
@@ -42,7 +55,8 @@ def image_to_parsing(img, net):
     img = torch.unsqueeze(img, 0)
 
     with torch.no_grad():
-        img = img.cuda()
+        if run_with_cuda:
+            img = img.cuda()
         out = net(img)[0]
         parsing = out.squeeze(0).cpu().numpy().argmax(0)
         return parsing
