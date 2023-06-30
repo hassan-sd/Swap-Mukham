@@ -5,6 +5,7 @@ import time
 import torch
 import shutil
 import gfpgan
+import argparse
 import platform
 import datetime
 import subprocess
@@ -12,265 +13,115 @@ import insightface
 import onnxruntime
 import numpy as np
 import gradio as gr
-from threading import Thread
-from insightface.utils import face_align
 from moviepy.editor import VideoFileClip, ImageSequenceClip
-from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
+from face_analyser import detect_conditions, analyse_face
+from utils import trim_video, StreamerThread, ProcessBar, open_directory
+from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list
+from swapper import (
+    swap_face,
+    swap_face_with_condition,
+    swap_specific,
+    swap_options_list,
+)
+
+## ------------------------------ USER ARGS ------------------------------
+
+parser = argparse.ArgumentParser(description="Swap-Mukham Face Swapper")
+parser.add_argument("--out_dir", help="Default Output directory", default=os.getcwd())
+parser.add_argument("--cuda", action="store_true", help="Enable cuda", default=False)
+parser.add_argument(
+    "--colab", action="store_true", help="Enable colab mode", default=False
+)
+user_args = parser.parse_args()
+
+## ------------------------------ DEFAULTS ------------------------------
+
+USE_COLAB = user_args.colab
+USE_CUDA = user_args.cuda
+DEF_OUTPUT_PATH = user_args.out_dir
 WORKSPACE = None
 OUTPUT_FILE = None
 CURRENT_FRAME = None
 STREAMER = None
 DETECT_CONDITION = "left most"
+DETECT_SIZE = 640
+DETECT_THRESH = 0.6
 NUM_OF_SRC_SPECIFIC = 10
+MASK_INCLUDE = [
+    "Skin",
+    "R-Eyebrow",
+    "L-Eyebrow",
+    "L-Eye",
+    "R-Eye",
+    "Nose",
+    "L-Lip",
+    "U-Lip",
+    "Chin",
+]
+MASK_EXCLUDE = ["R-Ear", "L-Ear"]
+MASK_BLUR = 25
 
 FACE_SWAPPER = None
 FACE_ANALYSER = None
 FACE_ENHANCER = None
+FACE_PARSER = None
+
+## ------------------------------ SET EXECUTION PROVIDER ------------------------------
+# Note: For AMD,MAC or non CUDA users, change settings here
 
 PROVIDER = ["CPUExecutionProvider"]
-available_providers = onnxruntime.get_available_providers()
-if "CUDAExecutionProvider" in available_providers:
-    PROVIDER = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+if USE_CUDA:
+    available_providers = onnxruntime.get_available_providers()
+    if "CUDAExecutionProvider" in available_providers:
+        print("\n********** Running on CUDA **********\n")
+        PROVIDER = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        USE_CUDA = False
+        print("\n********** CUDA unavailable running on CPU **********\n")
+else:
+    USE_CUDA = False
+    print("\n********** Running on CPU **********\n")
+
+
+## ------------------------------ LOAD MODELS ------------------------------
 
 
 def load_face_analyser_model(name="buffalo_l"):
     global FACE_ANALYSER
     if FACE_ANALYSER is None:
         FACE_ANALYSER = insightface.app.FaceAnalysis(name=name, providers=PROVIDER)
-        FACE_ANALYSER.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.5)
+        FACE_ANALYSER.prepare(
+            ctx_id=0, det_size=(DETECT_SIZE, DETECT_SIZE), det_thresh=DETECT_THRESH
+        )
 
 
-def load_face_swapper_model(name="inswapper_128.onnx"):
+def load_face_swapper_model(name="./assets/pretrained_models/inswapper_128.onnx"):
     global FACE_SWAPPER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_SWAPPER is None:
         FACE_SWAPPER = insightface.model_zoo.get_model(path, providers=PROVIDER)
 
 
-def load_face_enhancer_model(name="GFPGANv1.4.pth"):
+def load_face_enhancer_model(name="./assets/pretrained_models/GFPGANv1.4.pth"):
     global FACE_ENHANCER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_ENHANCER is None:
         FACE_ENHANCER = gfpgan.GFPGANer(model_path=path, upscale=1)
 
 
-detect_conditions = [
-    "left most",
-    "right most",
-    "top most",
-    "bottom most",
-    "most width",
-    "most height",
-]
+def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
+    global FACE_PARSER
+    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
+    if FACE_PARSER is None:
+        FACE_PARSER = init_parser(name)
 
 
-def analyse_face(image, return_single_face=True):
-    faces = FACE_ANALYSER.get(image)
-    if not return_single_face:
-        return faces
+load_face_analyser_model()
+load_face_swapper_model()
 
-    total_faces = len(faces)
-    if total_faces == 1:
-        return faces[0]
-
-    global DETECT_CONDITION
-    condition = DETECT_CONDITION
-
-    print(f"{total_faces} face detected. Using {condition} face.")
-    if condition == "left most":
-        return sorted(faces, key=lambda face: face["bbox"][0])[0]
-    elif condition == "right most":
-        return sorted(faces, key=lambda face: face["bbox"][0])[-1]
-    elif condition == "top most":
-        return sorted(faces, key=lambda face: face["bbox"][1])[0]
-    elif condition == "bottom most":
-        return sorted(faces, key=lambda face: face["bbox"][1])[-1]
-    elif condition == "most width":
-        return sorted(faces, key=lambda face: face["bbox"][2])[-1]
-    elif condition == "most height":
-        return sorted(faces, key=lambda face: face["bbox"][3])[-1]
-
-
-swap_options_list = [
-    "All face",
-    "Age less than",
-    "Age greater than",
-    "All Male",
-    "All Female",
-    "Specific Face",
-]
-
-
-def swap_face(whole_img, target_face, source_face, face_enhance=False):
-    if not face_enhance or FACE_ENHANCER is None:
-        return FACE_SWAPPER.get(whole_img, target_face, source_face, paste_back=True)
-
-    bgr_fake, M = FACE_SWAPPER.get(
-        whole_img, target_face, source_face, paste_back=False
-    )
-    _, bgr_fake, _ = FACE_ENHANCER.enhance(bgr_fake, paste_back=True, has_aligned=True)
-    bgr_fake = bgr_fake[0]
-
-    aimg, _ = face_align.norm_crop2(whole_img, target_face.kps, image_size=512)
-    IM = cv2.invertAffineTransform(M / 0.25)  # 128/512 = 0.25
-    img_white = np.full((aimg.shape[0], aimg.shape[1]), 255, dtype=np.float32)
-    bgr_fake = cv2.warpAffine(
-        bgr_fake, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
-    )
-    img_white = cv2.warpAffine(
-        img_white, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
-    )
-    img_white[img_white > 20] = 255
-    img_mask = img_white
-    mask_h_inds, mask_w_inds = np.where(img_mask == 255)
-    mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
-    mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
-    mask_size = int(np.sqrt(mask_h * mask_w))
-
-    k = max(mask_size // 10, 10)
-    img_mask = cv2.erode(img_mask, np.ones((k, k), np.uint8), iterations=1)
-
-    k = max(mask_size // 20, 5)
-    kernel_size = (k, k)
-    blur_size = tuple(2 * i + 1 for i in kernel_size)
-    img_mask = cv2.GaussianBlur(img_mask, blur_size, 0) / 255
-
-    img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
-    fake_merged = img_mask * bgr_fake + (1 - img_mask) * whole_img.astype(np.float32)
-    return fake_merged.astype(np.uint8)
-
-
-def swap_face_with_condition(
-    source_face, target_faces, whole_img, condition, age, face_enhance=False
-):
-    swapped = whole_img.copy()
-
-    for target_face in target_faces:
-        if condition == "All face":
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-        elif condition == "Age less than" and target_face["age"] < age:
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-        elif condition == "Age greater than" and target_face["age"] > age:
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-        elif condition == "All Male" and target_face["gender"] == 1:
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-        elif condition == "All Female" and target_face["gender"] == 0:
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-
-    return swapped
-
-
-def swap_specific(
-    source_specifics, target_faces, whole_img, threshold=0.6, face_enhance=False
-):
-    swapped = whole_img.copy()
-
-    for source_face, specific_face in source_specifics:
-        specific_embed = specific_face["embedding"]
-        specific_embed /= np.linalg.norm(specific_embed)
-
-        for target_face in target_faces:
-            target_embed = target_face["embedding"]
-            target_embed /= np.linalg.norm(target_embed)
-            cosine_distance = 1 - np.dot(specific_embed, target_embed)
-            if cosine_distance > threshold:
-                continue
-            swapped = swap_face(
-                swapped, target_face, source_face, face_enhance=face_enhance
-            )
-
-    return swapped
-
-
-def trim_video(video_path, output_path, start_frame, stop_frame):
-    video_name, _ = os.path.splitext(os.path.basename(video_path))
-    trimmed_video_filename = video_name + "_trimmed" + ".mp4"
-    temp_path = os.path.join(output_path, "trim")
-    os.makedirs(temp_path, exist_ok=True)
-    trimmed_video_file_path = os.path.join(temp_path, trimmed_video_filename)
-
-    video = VideoFileClip(video_path)
-    fps = video.fps
-    start_time = start_frame / fps
-    duration = (stop_frame - start_frame) / fps
-
-    trimmed_video = video.subclip(start_time, start_time + duration)
-    trimmed_video.write_videofile(
-        trimmed_video_file_path, codec="libx264", audio_codec="aac"
-    )
-    trimmed_video.close()
-    video.close()
-
-    return trimmed_video_file_path
-
-
-def open_directory(path=None):
-    if path is None:
-        return
-    try:
-        os.startfile(path)
-    except:
-        subprocess.Popen(["xdg-open", path])
-
-
-class StreamerThread(object):
-    def __init__(self, src=0):
-        self.capture = cv2.VideoCapture(src)
-        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.FPS = 1 / 30
-        self.FPS_MS = int(self.FPS * 1000)
-        self.thread = None
-        self.stopped = False
-        self.frame = None
-
-    def start(self):
-        self.thread = Thread(target=self.update, args=())
-        self.thread.daemon = True
-        self.thread.start()
-
-    def stop(self):
-        self.stopped = True
-        self.thread.join()
-        print("stopped")
-
-    def update(self):
-        while not self.stopped:
-            if self.capture.isOpened():
-                (self.status, self.frame) = self.capture.read()
-            time.sleep(self.FPS)
-
-
-class ProcessBar:
-    def __init__(self, bar_length, total, before="⬛", after="🟨"):
-        self.bar_length = bar_length
-        self.total = total
-        self.before = before
-        self.after = after
-        self.bar = [self.before] * bar_length
-        self.start_time = time.time()
-
-    def get(self, index):
-        total = self.total
-        elapsed_time = time.time() - self.start_time
-        average_time_per_iteration = elapsed_time / (index + 1)
-        remaining_iterations = total - (index + 1)
-        estimated_remaining_time = remaining_iterations * average_time_per_iteration
-
-        self.bar[int(index / total * self.bar_length)] = self.after
-        info_text = f"({index+1}/{total}) {''.join(self.bar)} "
-        info_text += f"(ETR: {int(estimated_remaining_time // 60)} min {int(estimated_remaining_time % 60)} sec)"
-        return info_text
+## ------------------------------ MAIN PROCESS ------------------------------
 
 
 def process(
@@ -286,12 +137,18 @@ def process(
     age,
     distance,
     face_enhance,
+    enable_face_parser,
+    mask_include,
+    mask_exclude,
+    mask_blur,
     *specifics,
 ):
     global WORKSPACE
     global OUTPUT_FILE
     global PREVIEW
     WORKSPACE, OUTPUT_FILE, PREVIEW = None, None, None
+
+    ## ------------------------------ GUI UPDATE FUNC ------------------------------
 
     def ui_before():
         return (
@@ -317,6 +174,7 @@ def process(
             gr.update(value=OUTPUT_FILE, visible=True),
         )
 
+    ## ------------------------------ LOAD PENDING MODELS ------------------------------
     start_time = time.time()
     specifics = list(specifics)
     half = len(specifics) // 2
@@ -333,39 +191,67 @@ def process(
         yield "### \n ⌛ Loading face enhancer model...", *ui_before()
         load_face_enhancer_model()
 
+    if enable_face_parser:
+        yield "### \n ⌛ Loading face parsing model...", *ui_before()
+        load_face_parser_model()
+
     yield "### \n ⌛ Analysing Face...", *ui_before()
+
+    mi = mask_regions_to_list(mask_include)
+    me = mask_regions_to_list(mask_exclude)
+    models = {
+        "swap": FACE_SWAPPER,
+        "enhance": FACE_ENHANCER,
+        "enhance_sett": face_enhance,
+        "face_parser": FACE_PARSER,
+        "face_parser_sett": (enable_face_parser, mi, me, int(mask_blur)),
+    }
+
+    ## ------------------------------ ANALYSE SOURCE & SPECIFIC ------------------------------
 
     analysed_source_specific = []
     if condition == "Specific Face":
         for source, specific in zip(sources, specifics):
             if source is None or specific is None:
                 continue
-            analysed_source = analyse_face(source, return_single_face=True)
-            analysed_specific = analyse_face(specific, return_single_face=True)
+            analysed_source = analyse_face(
+                source,
+                FACE_ANALYSER,
+                return_single_face=True,
+                detect_condition=DETECT_CONDITION,
+            )
+            analysed_specific = analyse_face(
+                specific,
+                FACE_ANALYSER,
+                return_single_face=True,
+                detect_condition=DETECT_CONDITION,
+            )
             analysed_source_specific.append([analysed_source, analysed_specific])
     else:
         source = cv2.imread(source_path)
-        analysed_source = analyse_face(source, return_single_face=True)
+        analysed_source = analyse_face(
+            source,
+            FACE_ANALYSER,
+            return_single_face=True,
+            detect_condition=DETECT_CONDITION,
+        )
+
+    ## ------------------------------ IMAGE ------------------------------
 
     if input_type == "Image":
         target = cv2.imread(image_path)
-        analysed_target = analyse_face(target, return_single_face=False)
+        analysed_target = analyse_face(target, FACE_ANALYSER, return_single_face=False)
         if condition == "Specific Face":
             swapped = swap_specific(
                 analysed_source_specific,
                 analysed_target,
                 target,
+                models,
                 threshold=distance,
-                face_enhance=face_enhance,
             )
         else:
             swapped = swap_face_with_condition(
-                analysed_source,
-                analysed_target,
-                target,
-                condition,
-                age,
-                face_enhance=face_enhance,
+                target, analysed_target, analysed_source, condition, age, models
             )
 
         filename = os.path.join(output_path, output_name + ".png")
@@ -378,6 +264,8 @@ def process(
         _min, _sec = divmod(tot_exec_time, 60)
 
         yield f"Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
+
+    ## ------------------------------ VIDEO ------------------------------
 
     elif input_type == "Video":
         temp_path = os.path.join(output_path, output_name, "sequence")
@@ -392,7 +280,9 @@ def process(
         process_bar = ProcessBar(30, total_frames)
         yield "### \n ⌛ Analysing...", *ui_before()
         for i, frame in enumerate(video_clip.iter_frames()):
-            analysed_targets.append(analyse_face(frame, return_single_face=False))
+            analysed_targets.append(
+                analyse_face(frame, FACE_ANALYSER, return_single_face=False)
+            )
             info_text = "Analysing Faces || "
             info_text += process_bar.get(i)
             print("\033[1A\033[K", end="", flush=True)
@@ -412,20 +302,15 @@ def process(
 
             if condition == "Specific Face":
                 swapped = swap_specific(
-                    analysed_source_specific,
-                    analysed_target,
                     frame,
+                    analysed_target,
+                    analysed_source_specific,
+                    models,
                     threshold=distance,
-                    face_enhance=face_enhance,
                 )
             else:
                 swapped = swap_face_with_condition(
-                    analysed_source,
-                    analysed_target,
-                    frame,
-                    condition,
-                    age,
-                    face_enhance=face_enhance,
+                    frame, analysed_target, analysed_source, condition, age, models
                 )
 
             image_path = os.path.join(temp_path, f"frame_{i}.png")
@@ -465,9 +350,16 @@ def process(
 
         yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after_vid()
 
+    ## ------------------------------ DIRECTORY ------------------------------
+
     elif input_type == "Directory":
         source = cv2.imread(source_path)
-        source = analyse_face(source, return_single_face=True)
+        source = analyse_face(
+            source,
+            FACE_ANALYSER,
+            return_single_face=True,
+            detect_condition=DETECT_CONDITION,
+        )
         extensions = ["jpg", "jpeg", "png", "bmp", "tiff", "ico", "webp"]
         temp_path = os.path.join(output_path, output_name)
         if os.path.exists(temp_path):
@@ -484,24 +376,21 @@ def process(
         filename = None
         for i, file_path in enumerate(files):
             target = cv2.imread(file_path)
-            analysed_target = analyse_face(target, return_single_face=False)
+            analysed_target = analyse_face(
+                target, FACE_ANALYSER, return_single_face=False
+            )
 
             if condition == "Specific Face":
                 swapped = swap_specific(
-                    analysed_source_specific,
-                    analysed_target,
                     target,
+                    analysed_target,
+                    analysed_source_specific,
+                    models,
                     threshold=distance,
-                    face_enhance=face_enhance,
                 )
             else:
                 swapped = swap_face_with_condition(
-                    analysed_source,
-                    analysed_target,
-                    target,
-                    condition,
-                    age,
-                    face_enhance=face_enhance,
+                    target, analysed_target, analysed_source, condition, age, models
                 )
 
             filename = os.path.join(temp_path, os.path.basename(file_path))
@@ -518,34 +407,31 @@ def process(
 
         yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
 
+    ## ------------------------------ STREAM ------------------------------
+
     elif input_type == "Stream":
         yield "### \n ⌛ Starting...", *ui_before()
-        source = cv2.imread(source_path)
-        source = analyse_face(source, return_single_face=True)
-
         global STREAMER
         STREAMER = StreamerThread(src=directory_path)
         STREAMER.start()
+
         while True:
             try:
                 target = STREAMER.frame
-                analysed_target = analyse_face(target, return_single_face=False)
+                analysed_target = analyse_face(
+                    target, FACE_ANALYSER, return_single_face=False
+                )
                 if condition == "Specific Face":
                     swapped = swap_specific(
-                        analysed_source_specific,
-                        analysed_target,
                         target,
+                        analysed_target,
+                        analysed_source_specific,
+                        models,
                         threshold=distance,
-                        face_enhance=face_enhance,
                     )
                 else:
                     swapped = swap_face_with_condition(
-                        analysed_source,
-                        analysed_target,
-                        target,
-                        condition,
-                        age,
-                        face_enhance=face_enhance,
+                        target, analysed_target, analysed_source, condition, age, models
                     )
                 PREVIEW = swapped[:, :, ::-1]
                 yield f"Streaming...", *ui_before()
@@ -554,7 +440,9 @@ def process(
         STREAMER.stop()
 
 
-### Gradio change functions
+## ------------------------------ GRADIO FUNC ------------------------------
+
+
 def update_radio(value):
     if value == "Image":
         return (
@@ -676,11 +564,12 @@ def trim_and_reload(video_path, output_path, output_name, start_frame, stop_fram
         yield video_path, "### \n ❌ Video trimming failed. See console for more info."
 
 
+## ------------------------------ GRADIO GUI ------------------------------
+
 css = """
 footer{display:none !important}
 """
 
-### Gradio interface
 with gr.Blocks(css=css) as interface:
     gr.Markdown("# 🗿 Swap Mukham")
     gr.Markdown("### Face swap app based on insightface inswapper.")
@@ -707,16 +596,20 @@ with gr.Blocks(css=css) as interface:
                         info="This condition is only used when multiple faces are detected on source or specific image.",
                     )
                     detection_size = gr.Number(
-                        label="Detection Size", value=640, interactive=True
+                        label="Detection Size", value=DETECT_SIZE, interactive=True
                     )
                     detection_threshold = gr.Number(
-                        label="Detection Threshold", value=0.5, interactive=True
+                        label="Detection Threshold",
+                        value=DETECT_THRESH,
+                        interactive=True,
                     )
                     apply_detection_settings = gr.Button("Apply settings")
 
                 with gr.Tab("📤 Output Settings"):
                     output_directory = gr.Text(
-                        label="Output Directory", value=os.getcwd(), interactive=True
+                        label="Output Directory",
+                        value=DEF_OUTPUT_PATH,
+                        interactive=True,
                     )
                     output_name = gr.Text(
                         label="Output Name", value="Result", interactive=True
@@ -726,9 +619,37 @@ with gr.Blocks(css=css) as interface:
                     )
 
                 with gr.Tab("🪄 Other Settings"):
-                    enable_face_enhance = gr.Checkbox(
-                        label="Enhance face (GFPGAN)", value=False, interactive=True
-                    )
+                    with gr.Accordion("Enhance Face", open=True):
+                        enable_face_enhance = gr.Checkbox(
+                            label="Enable GFPGAN", value=False, interactive=True
+                        )
+                    with gr.Accordion("Advanced Mask", open=False):
+                        enable_face_parser_mask = gr.Checkbox(
+                            label="Enable Face Parsing",
+                            value=False,
+                            interactive=USE_CUDA,
+                        )
+
+                        mask_include = gr.Dropdown(
+                            mask_regions.keys(),
+                            value=MASK_INCLUDE,
+                            multiselect=True,
+                            label="Include",
+                            interactive=USE_CUDA,
+                        )
+                        mask_exclude = gr.Dropdown(
+                            mask_regions.keys(),
+                            value=MASK_EXCLUDE,
+                            multiselect=True,
+                            label="Exclude",
+                            interactive=USE_CUDA,
+                        )
+                        mask_blur = gr.Number(
+                            label="Blur Mask",
+                            value=MASK_BLUR,
+                            minimum=0,
+                            interactive=USE_CUDA,
+                        )
 
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True
@@ -766,7 +687,8 @@ with gr.Blocks(css=css) as interface:
                         )
 
                     with gr.Box(visible=True) as input_video_group:
-                        video_input = gr.Text(
+                        vid_widget = gr.Video if USE_COLAB else gr.Text
+                        video_input = vid_widget(
                             label="Target Video Path", interactive=True
                         )
                         with gr.Accordion("✂️ Trim video", open=False):
@@ -825,8 +747,12 @@ with gr.Blocks(css=css) as interface:
                 )
 
                 with gr.Row():
-                    output_directory_button = gr.Button("📂", interactive=False)
-                    output_video_button = gr.Button("🎬", interactive=False)
+                    output_directory_button = gr.Button(
+                        "📂", interactive=False, visible=not USE_COLAB
+                    )
+                    output_video_button = gr.Button(
+                        "🎬", interactive=False, visible=not USE_COLAB
+                    )
 
                 with gr.Column():
                     gr.Markdown(
@@ -835,6 +761,8 @@ with gr.Blocks(css=css) as interface:
                     gr.Markdown(
                         "### [Source code](https://github.com/harisreedhar/Swap-Mukham) . [Disclaimer](https://github.com/harisreedhar/Swap-Mukham#disclaimer) . [Gradio](https://gradio.app/)"
                     )
+
+    ## ------------------------------ GRADIO EVENTS ------------------------------
 
     set_slider_range_event = set_slider_range_btn.click(
         video_changed,
@@ -898,6 +826,10 @@ with gr.Blocks(css=css) as interface:
         age,
         distance_slider,
         enable_face_enhance,
+        enable_face_parser_mask,
+        mask_include,
+        mask_exclude,
+        mask_blur,
         *src_specific_inputs,
     ]
 
@@ -934,4 +866,7 @@ with gr.Blocks(css=css) as interface:
     )
 
 if __name__ == "__main__":
-    interface.queue(concurrency_count=2, max_size=20).launch()
+    if USE_COLAB:
+        print("Running in colab mode")
+
+    interface.queue(concurrency_count=2, max_size=20).launch(share=USE_COLAB)
