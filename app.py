@@ -521,7 +521,7 @@ def analyse_settings_changed(detect_condition, detection_size, detection_thresho
     global FACE_ANALYSER
     global DETECT_CONDITION
     DETECT_CONDITION = detect_condition
-    FACE_ANALYSER = insightface.app.FaceAnalysis(name="buffalo_l", providers=provider)
+    FACE_ANALYSER = insightface.app.FaceAnalysis(name="buffalo_l", providers=PROVIDER)
     FACE_ANALYSER.prepare(
         ctx_id=0,
         det_size=(int(detection_size), int(detection_size)),
