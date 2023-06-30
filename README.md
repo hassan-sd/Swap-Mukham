@@ -1,6 +1,5 @@
 # Swap-Mukham
 [![Open In Colab](https://img.shields.io/badge/Open%20In-Colab-blue?logo=google-colab&logoColor=white)](https://colab.research.google.com/github/harisreedhar/Swap-Mukham/blob/main/swap_mukham_colab.ipynb)
-
 ## Description
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
@@ -8,39 +7,41 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 ![swapmukham_faceenhanced](https://github.com/harisreedhar/Swap-Mukham/assets/46858047/c0c34eac-6b48-4c2f-9222-a85e8fb76b43)
 
 
-## Installation and Usage
+## Features
+- Easy to use Gradio gui
+- Support Image, Video, Directory inputs
+- Swap specific face (face recognition)
+- Video trim tool
+- Face enhancer (GFPGAN)
+- Face parsing mask (Requires CUDA)
+- colab support
 
-1. Clone repository:
-- ``git clone https://github.com/harisreedhar/Swap-Mukham``
-- ``cd Swap-Mukham``
-
-
-2. Download models from the link and place it in the root directory.
+## Installation
+### CPU Install
+````
+git clone https://github.com/harisreedhar/Swap-Mukham
+cd Swap-Mukham
+conda create -n swapmukham python=3.10 -y
+conda activate swapmukham
+pip install torch==2.0.0+cpu torchvision==0.15.1+cpu torchaudio==2.0.1 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements_cpu.txt
+python app.py
+````
+### GPU Install (CUDA)
+````
+git clone https://github.com/harisreedhar/Swap-Mukham
+cd Swap-Mukham
+conda create -n swapmukham python=3.10 -y
+conda activate swapmukham
+conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia
+pip install -r requirements.txt
+python app.py --cuda
+````
+## Downolad Models
 - [inswapper_128.onnx](https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx)
 - [GFPGANv1.4.pth](https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth)
-
-
-3. Create conda environment (Assuming anaconda is already installed):
-- ``conda create -n swapmukham python=3.10 -y``
-- ``conda activate swapmukham``
-- ``conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia``
-
-
-4. Install requirements:
-- ``pip install -r requirements.txt``
-
-
-5. Run the Application:
-- ``python app.py``
-
-
-6. Access the Application:
-- Once the application is running, a port number will be displayed, such as http://127.0.0.1:7860/. Open this URL in your browser.
-
-
-7. Dark Theme:
-- If you prefer a dark theme, append ``/?__theme=dark`` to the end of the URL.
-
+- [79999_iter.pth](https://drive.google.com/open?id=154JgKpzCPW82qINcVieuPH3fZ2e0P812)
+- place these models inside ``/assets/pretrained_models/``
 
 ## Disclaimer
 
@@ -75,9 +76,10 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 
 - [Roop](https://github.com/s0md3v/roop)
 - [Insightface](https://github.com/deepinsight)
-- [Gfpgan](https://github.com/TencentARC/GFPGAN)
 - [Ffmpeg](https://ffmpeg.org/)
 - [Gradio](https://gradio.app/)
+- [Wav2lip HQ](https://github.com/Markfryazino/wav2lip-hq)
+- [Face Parsing](https://github.com/zllrunning/face-parsing.PyTorch)
 
 ## Loved my work?
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)
