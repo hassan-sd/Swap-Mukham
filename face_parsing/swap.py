@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import cv2
 import numpy as np
@@ -27,15 +29,44 @@ mask_regions = {
     "Hat":18
 }
 
-run_with_cuda = False
+# Borrowed from simswap
+# https://github.com/neuralchen/SimSwap/blob/26c84d2901bd56eda4d5e3c5ca6da16e65dc82a6/util/reverse2original.py#L30
+class SoftErosion(nn.Module):
+    def __init__(self, kernel_size=15, threshold=0.6, iterations=1):
+        super(SoftErosion, self).__init__()
+        r = kernel_size // 2
+        self.padding = r
+        self.iterations = iterations
+        self.threshold = threshold
 
-def init_parser(pth_path, use_cuda=False):
-    global run_with_cuda
-    run_with_cuda = use_cuda
+        # Create kernel
+        y_indices, x_indices = torch.meshgrid(torch.arange(0., kernel_size), torch.arange(0., kernel_size))
+        dist = torch.sqrt((x_indices - r) ** 2 + (y_indices - r) ** 2)
+        kernel = dist.max() - dist
+        kernel /= kernel.sum()
+        kernel = kernel.view(1, 1, *kernel.shape)
+        self.register_buffer('weight', kernel)
 
+    def forward(self, x):
+        x = x.float()
+        for i in range(self.iterations - 1):
+            x = torch.min(x, F.conv2d(x, weight=self.weight, groups=x.shape[1], padding=self.padding))
+        x = F.conv2d(x, weight=self.weight, groups=x.shape[1], padding=self.padding)
+
+        mask = x >= self.threshold
+        x[mask] = 1.0
+        x[~mask] /= x[~mask].max()
+
+        return x, mask
+
+device = "cpu"
+
+def init_parser(pth_path, mode="cpu"):
+    global device
+    device = mode
     n_classes = 19
     net = BiSeNet(n_classes=n_classes)
-    if run_with_cuda:
+    if device == "cuda":
         net.cuda()
         net.load_state_dict(torch.load(pth_path))
     else:
@@ -55,8 +86,7 @@ def image_to_parsing(img, net):
     img = torch.unsqueeze(img, 0)
 
     with torch.no_grad():
-        if run_with_cuda:
-            img = img.cuda()
+        img = img.to(device)
         out = net(img)[0]
         parsing = out.squeeze(0).cpu().numpy().argmax(0)
         return parsing
@@ -68,20 +98,33 @@ def get_mask(parsing, classes):
         res += parsing == val
     return res
 
-def swap_regions(source, target, net, includes=[1,2,3,4,5,10,11,12,13], excludes=[7,8], blur_size=25):
+def swap_regions(source, target, net, smooth_mask, includes=[1,2,3,4,5,10,11,12,13], blur=10):
     parsing = image_to_parsing(source, net)
+
     if len(includes) == 0:
         return source, np.zeros_like(source)
+
     include_mask = get_mask(parsing, includes)
-    include_mask = np.repeat(np.expand_dims(include_mask.astype('float32'), axis=2), 3, 2)
-    if len(excludes) > 0:
-        exclude_mask = get_mask(parsing, excludes)
-        exclude_mask = np.repeat(np.expand_dims(exclude_mask.astype('float32'), axis=2), 3, 2)
-        include_mask -= exclude_mask
-    mask = 1 - cv2.GaussianBlur(include_mask.clip(0,1), (0, 0), blur_size)
-    result = (1 - mask) * cv2.resize(source, (512, 512)) + mask * cv2.resize(target, (512, 512))
-    result = cv2.resize(result.astype("float32"), (source.shape[1], source.shape[0]))
-    return result, mask.astype('float32')
+    mask = np.repeat(include_mask[:, :, np.newaxis], 3, axis=2).astype("float32")
+
+    if smooth_mask is not None:
+        mask_tensor = torch.from_numpy(mask.copy().transpose((2, 0, 1))).float().to(device)
+        face_mask_tensor = mask_tensor[0] + mask_tensor[1]
+        soft_face_mask_tensor, _ = smooth_mask(face_mask_tensor.unsqueeze_(0).unsqueeze_(0))
+        soft_face_mask_tensor.squeeze_()
+        mask = np.repeat(soft_face_mask_tensor.cpu().numpy()[:, :, np.newaxis], 3, axis=2)
+
+    if blur > 0:
+        mask = cv2.GaussianBlur(mask, (0, 0), blur)
+
+    resized_source = cv2.resize((source/255).astype("float32"), (512, 512))
+    resized_target = cv2.resize((target/255).astype("float32"), (512, 512))
+
+    result = mask * resized_source + (1 - mask) * resized_target
+    normalized_result = (result - np.min(result)) / (np.max(result) - np.min(result))
+    result = cv2.resize((result*255).astype("uint8"), (source.shape[1], source.shape[0]))
+
+    return result
 
 def mask_regions_to_list(values):
     out_ids = []

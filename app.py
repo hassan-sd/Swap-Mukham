@@ -17,7 +17,7 @@ from moviepy.editor import VideoFileClip, ImageSequenceClip
 
 from face_analyser import detect_conditions, analyse_face
 from utils import trim_video, StreamerThread, ProcessBar, open_directory
-from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list
+from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
 from swapper import (
     swap_face,
     swap_face_with_condition,
@@ -59,8 +59,9 @@ MASK_INCLUDE = [
     "L-Lip",
     "U-Lip"
 ]
-MASK_EXCLUDE = ["R-Ear", "L-Ear", "Hair", "Hat"]
-MASK_BLUR = 25
+MASK_SOFT_KERNEL = 17
+MASK_SOFT_ITERATIONS = 7
+MASK_BLUR_AMOUNT = 20
 
 FACE_SWAPPER = None
 FACE_ANALYSER = None
@@ -83,6 +84,8 @@ if USE_CUDA:
 else:
     USE_CUDA = False
     print("\n********** Running on CPU **********\n")
+
+device = "cuda" if USE_CUDA else "cpu"
 
 
 ## ------------------------------ LOAD MODELS ------------------------------
@@ -114,7 +117,7 @@ def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
     global FACE_PARSER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_PARSER is None:
-        FACE_PARSER = init_parser(name, use_cuda=USE_CUDA)
+        FACE_PARSER = init_parser(name, mode=device)
 
 
 load_face_analyser_model()
@@ -137,9 +140,10 @@ def process(
     distance,
     face_enhance,
     enable_face_parser,
-    mask_include,
-    mask_exclude,
-    mask_blur,
+    mask_includes,
+    mask_soft_kernel,
+    mask_soft_iterations,
+    blur_amount,
     *specifics,
 ):
     global WORKSPACE
@@ -196,14 +200,18 @@ def process(
 
     yield "### \n ⌛ Analysing Face...", *ui_before()
 
-    mi = mask_regions_to_list(mask_include)
-    me = mask_regions_to_list(mask_exclude)
+    includes = mask_regions_to_list(mask_includes)
+    if mask_soft_iterations > 0:
+        smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=int(mask_soft_iterations)).to(device)
+    else:
+        smooth_mask = None
+
     models = {
         "swap": FACE_SWAPPER,
         "enhance": FACE_ENHANCER,
         "enhance_sett": face_enhance,
         "face_parser": FACE_PARSER,
-        "face_parser_sett": (enable_face_parser, mi, me, int(mask_blur)),
+        "face_parser_sett": (enable_face_parser, includes, smooth_mask, int(blur_amount))
     }
 
     ## ------------------------------ ANALYSE SOURCE & SPECIFIC ------------------------------
@@ -301,9 +309,9 @@ def process(
 
             if condition == "Specific Face":
                 swapped = swap_specific(
-                    frame,
-                    analysed_target,
                     analysed_source_specific,
+                    analysed_target,
+                    frame,
                     models,
                     threshold=distance,
                 )
@@ -381,9 +389,9 @@ def process(
 
             if condition == "Specific Face":
                 swapped = swap_specific(
-                    target,
-                    analysed_target,
                     analysed_source_specific,
+                    analysed_target,
+                    target,
                     models,
                     threshold=distance,
                 )
@@ -636,16 +644,23 @@ with gr.Blocks(css=css) as interface:
                             label="Include",
                             interactive=True,
                         )
-                        mask_exclude = gr.Dropdown(
-                            mask_regions.keys(),
-                            value=MASK_EXCLUDE,
-                            multiselect=True,
-                            label="Exclude",
+                        mask_soft_kernel = gr.Number(
+                            label="Soft Erode Kernel",
+                            value=MASK_SOFT_KERNEL,
+                            minimum=3,
                             interactive=True,
+                            visible = False
                         )
-                        mask_blur = gr.Number(
-                            label="Blur Mask",
-                            value=MASK_BLUR,
+                        mask_soft_iterations = gr.Number(
+                            label="Soft Erode Iterations",
+                            value=MASK_SOFT_ITERATIONS,
+                            minimum=0,
+                            interactive=True,
+
+                        )
+                        blur_amount = gr.Number(
+                            label="Mask Blur",
+                            value=MASK_BLUR_AMOUNT,
                             minimum=0,
                             interactive=True,
                         )
@@ -827,8 +842,9 @@ with gr.Blocks(css=css) as interface:
         enable_face_enhance,
         enable_face_parser_mask,
         mask_include,
-        mask_exclude,
-        mask_blur,
+        mask_soft_kernel,
+        mask_soft_iterations,
+        blur_amount,
         *src_specific_inputs,
     ]
 
