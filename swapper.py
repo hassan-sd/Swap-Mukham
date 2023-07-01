@@ -25,10 +25,10 @@ def swap_face(whole_img, target_face, source_face, models):
     aimg, _ = face_align.norm_crop2(whole_img, target_face.kps, image_size=image_size)
 
     if face_parser is not None:
-        fp_enable, mi, me, mb = models.get("face_parser_sett")
+        fp_enable, includes, smooth_mask, blur_amount = models.get("face_parser_sett")
         if fp_enable:
-            bgr_fake, parsed_mask = swap_regions(
-                bgr_fake, aimg, face_parser, includes=mi, excludes=me, blur_size=mb
+            bgr_fake = swap_regions(
+                bgr_fake, aimg, face_parser, smooth_mask, includes=includes, blur=blur_amount
             )
 
     if fe_enable:
