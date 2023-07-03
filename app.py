@@ -4,7 +4,6 @@ import glob
 import time
 import torch
 import shutil
-import gfpgan
 import argparse
 import platform
 import datetime
@@ -16,6 +15,7 @@ import gradio as gr
 from moviepy.editor import VideoFileClip, ImageSequenceClip
 
 from face_analyser import detect_conditions, analyse_face
+from face_enhancer import load_face_enhancer_model, face_enhancer_list
 from utils import trim_video, StreamerThread, ProcessBar, open_directory
 from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
 from swapper import (
@@ -106,13 +106,6 @@ def load_face_swapper_model(name="./assets/pretrained_models/inswapper_128.onnx"
         FACE_SWAPPER = insightface.model_zoo.get_model(path, providers=PROVIDER)
 
 
-def load_face_enhancer_model(name="./assets/pretrained_models/GFPGANv1.4.pth"):
-    global FACE_ENHANCER
-    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
-    if FACE_ENHANCER is None:
-        FACE_ENHANCER = gfpgan.GFPGANer(model_path=path, upscale=1)
-
-
 def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
     global FACE_PARSER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
@@ -138,7 +131,7 @@ def process(
     condition,
     age,
     distance,
-    face_enhance,
+    face_enhancer_name,
     enable_face_parser,
     mask_includes,
     mask_soft_kernel,
@@ -190,9 +183,11 @@ def process(
     yield "### \n ⌛ Loading face swapper model...", *ui_before()
     load_face_swapper_model()
 
-    if face_enhance:
-        yield "### \n ⌛ Loading face enhancer model...", *ui_before()
-        load_face_enhancer_model()
+    if face_enhancer_name != "NONE":
+        yield f"### \n ⌛ Loading {face_enhancer_name} model...", *ui_before()
+        face_enhancer_model = load_face_enhancer_model(name=face_enhancer_name, device=device)
+    else:
+        face_enhancer_model = None
 
     if enable_face_parser:
         yield "### \n ⌛ Loading face parsing model...", *ui_before()
@@ -208,10 +203,9 @@ def process(
 
     models = {
         "swap": FACE_SWAPPER,
-        "enhance": FACE_ENHANCER,
-        "enhance_sett": face_enhance,
+        "enhancer": (face_enhancer_model, face_enhancer_name),
         "face_parser": FACE_PARSER,
-        "face_parser_sett": (enable_face_parser, includes, smooth_mask, int(blur_amount))
+        "face_parser_settings": (enable_face_parser, includes, smooth_mask, int(blur_amount))
     }
 
     ## ------------------------------ ANALYSE SOURCE & SPECIFIC ------------------------------
@@ -626,10 +620,6 @@ with gr.Blocks(css=css) as interface:
                     )
 
                 with gr.Tab("🪄 Other Settings"):
-                    with gr.Accordion("Enhance Face", open=True):
-                        enable_face_enhance = gr.Checkbox(
-                            label="Enable GFPGAN", value=False, interactive=True
-                        )
                     with gr.Accordion("Advanced Mask", open=False):
                         enable_face_parser_mask = gr.Checkbox(
                             label="Enable Face Parsing",
@@ -664,6 +654,10 @@ with gr.Blocks(css=css) as interface:
                             minimum=0,
                             interactive=True,
                         )
+
+                    face_enhancer_name = gr.Dropdown(
+                        face_enhancer_list, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
+                    )
 
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True
@@ -839,7 +833,7 @@ with gr.Blocks(css=css) as interface:
         swap_option,
         age,
         distance_slider,
-        enable_face_enhance,
+        face_enhancer_name,
         enable_face_parser_mask,
         mask_include,
         mask_soft_kernel,

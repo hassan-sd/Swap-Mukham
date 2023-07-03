@@ -16,26 +16,30 @@ swap_options_list = [
 
 def swap_face(whole_img, target_face, source_face, models):
     inswapper = models.get("swap")
-    face_enhancer = models.get("enhance", None)
     face_parser = models.get("face_parser", None)
-    fe_enable = models.get("enhance_sett", False)
+    face_enhancer, face_enhancer_name = models.get("enhancer", (None, None))
 
     bgr_fake, M = inswapper.get(whole_img, target_face, source_face, paste_back=False)
-    image_size = 128 if not fe_enable else 512
+    image_size = 128 if face_enhancer is None else 512
     aimg, _ = face_align.norm_crop2(whole_img, target_face.kps, image_size=image_size)
 
     if face_parser is not None:
-        fp_enable, includes, smooth_mask, blur_amount = models.get("face_parser_sett")
+        fp_enable, includes, smooth_mask, blur_amount = models.get("face_parser_settings")
         if fp_enable:
             bgr_fake = swap_regions(
                 bgr_fake, aimg, face_parser, smooth_mask, includes=includes, blur=blur_amount
             )
 
-    if fe_enable:
-        _, bgr_fake, _ = face_enhancer.enhance(
-            bgr_fake, paste_back=True, has_aligned=True
-        )
-        bgr_fake = bgr_fake[0]
+    if face_enhancer is not None:
+        if face_enhancer_name == 'GFPGAN':
+            _, bgr_fake, _ = face_enhancer.enhance(
+                bgr_fake, paste_back=True, has_aligned=True
+            )
+            bgr_fake = bgr_fake[0]
+        elif face_enhancer_name.startswith("REAL-ESRGAN"):
+            bgr_fake = face_enhancer.predict(bgr_fake)
+
+        bgr_fake = cv2.resize(bgr_fake, (512,512))
         M /= 0.25
 
     IM = cv2.invertAffineTransform(M)
