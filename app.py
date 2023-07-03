@@ -620,10 +620,6 @@ with gr.Blocks(css=css) as interface:
                     )
 
                 with gr.Tab("🪄 Other Settings"):
-                    with gr.Accordion("Enhance Face", open=True):
-                        face_enhancer_name = gr.Dropdown(
-                            face_enhancer_list, label="Face Enhancer Name", value="NONE", multiselect=False, interactive=True
-                        )
                     with gr.Accordion("Advanced Mask", open=False):
                         enable_face_parser_mask = gr.Checkbox(
                             label="Enable Face Parsing",
@@ -658,6 +654,10 @@ with gr.Blocks(css=css) as interface:
                             minimum=0,
                             interactive=True,
                         )
+
+                    face_enhancer_name = gr.Dropdown(
+                        face_enhancer_list, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
+                    )
 
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True

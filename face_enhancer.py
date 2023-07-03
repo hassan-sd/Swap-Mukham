@@ -2,7 +2,7 @@ import os
 import torch
 import gfpgan
 from PIL import Image
-from RealESRGAN import RealESRGAN
+from upscaler.RealESRGAN import RealESRGAN
 
 face_enhancer_list = ['NONE', 'GFPGAN', 'REAL-ESRGAN 2x', 'REAL-ESRGAN 4x', 'REAL-ESRGAN 8x']
 
