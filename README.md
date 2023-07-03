@@ -10,7 +10,7 @@ A simple face swapper based on insightface inswapper heavily inspired by roop.
 - Support Image, Video, Directory inputs
 - Swap specific face (face recognition)
 - Video trim tool
-- Face enhancer (GFPGAN)
+- Face enhancer (GFPGAN, Real-ESRGAN)
 - Face parsing mask
 - colab support
 
@@ -46,6 +46,9 @@ python app.py --cuda
 - [inswapper_128.onnx](https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx)
 - [GFPGANv1.4.pth](https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth)
 - [79999_iter.pth](https://drive.google.com/open?id=154JgKpzCPW82qINcVieuPH3fZ2e0P812)
+- [RealESRGAN_x2.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth)
+- [RealESRGAN_x4.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth)
+- [RealESRGAN_x8.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x8.pth)
 - place these models inside ``/assets/pretrained_models/``
 
 ## Disclaimer
@@ -85,6 +88,7 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 - [Gradio](https://gradio.app/)
 - [Wav2lip HQ](https://github.com/Markfryazino/wav2lip-hq)
 - [Face Parsing](https://github.com/zllrunning/face-parsing.PyTorch)
+- [Real-ESRGAN (ai-forever)](https://github.com/ai-forever/Real-ESRGAN)
 
 ## Loved my work?
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)
