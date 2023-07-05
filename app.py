@@ -567,7 +567,7 @@ with gr.Blocks(css=css) as interface:
 
                 with gr.Group():
                     input_type = gr.Radio(
-                        ["Image", "Video", "Directory"]
+                        ["Image", "Video", "Directory"],
                         label="Target Type",
                         value="Video",
                     )
