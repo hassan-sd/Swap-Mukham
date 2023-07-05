@@ -194,6 +194,10 @@ def process(
 
     includes = mask_regions_to_list(mask_includes)
     smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=int(mask_soft_iterations)).to(device) if mask_soft_iterations > 0 else None
+    specifics = list(specifics)
+    half = len(specifics) // 2
+    sources = specifics[:half]
+    specifics = specifics[half:]
 
     ## ------------------------------ ANALYSE & SWAP FUNC ------------------------------
 
@@ -202,10 +206,6 @@ def process(
         if condition != "Specific Face":
             source_data = source_path, age
         else:
-            specifics = list(specifics)
-            half = len(specifics) // 2
-            sources = specifics[:half]
-            specifics = specifics[half:]
             source_data = ((sources, specifics), distance)
         analysed_targets, analysed_sources, whole_frame_list, num_faces_per_frame = get_analysed_data(FACE_ANALYSER, image_sequence, source_data, swap_condition=condition)
 
