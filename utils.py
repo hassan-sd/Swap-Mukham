@@ -110,3 +110,31 @@ def add_logo_to_image(img, logo=logo_image):
             roi[0] : roi[0] + logo_size, roi[1] : roi[1] + logo_size, c
         ]
     return img
+
+def split_list_by_lengths(data, length_list):
+    split_data = []
+    start_idx = 0
+    for length in length_list:
+        end_idx = start_idx + length
+        sublist = data[start_idx:end_idx]
+        split_data.append(sublist)
+        start_idx = end_idx
+    return split_data
+
+def merge_img_sequence_from_ref(ref_video_path, image_sequence, output_file_name):
+    video_clip = VideoFileClip(ref_video_path)
+    fps = video_clip.fps
+    duration = video_clip.duration
+    total_frames = video_clip.reader.nframes
+    audio_clip = video_clip.audio if video_clip.audio is not None else None
+    edited_video_clip = ImageSequenceClip(image_sequence, fps=fps)
+
+    if audio_clip is not None:
+        edited_video_clip = edited_video_clip.set_audio(audio_clip)
+
+    edited_video_clip.set_duration(duration).write_videofile(
+        output_file_name, codec="libx264"
+    )
+    edited_video_clip.close()
+    video_clip.close()
+
