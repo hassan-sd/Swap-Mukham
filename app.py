@@ -43,7 +43,7 @@ WORKSPACE = None
 OUTPUT_FILE = None
 CURRENT_FRAME = None
 STREAMER = None
-DETECT_CONDITION = "left most"
+DETECT_CONDITION = "best detection"
 DETECT_SIZE = 640
 DETECT_THRESH = 0.6
 NUM_OF_SRC_SPECIFIC = 10
@@ -137,6 +137,12 @@ def process(
     mask_soft_kernel,
     mask_soft_iterations,
     blur_amount,
+    face_scale,
+    enable_laplacian_blend,
+    crop_top,
+    crop_bott,
+    crop_left,
+    crop_right,
     *specifics,
 ):
     global WORKSPACE
@@ -207,7 +213,14 @@ def process(
             source_data = source_path, age
         else:
             source_data = ((sources, specifics), distance)
-        analysed_targets, analysed_sources, whole_frame_list, num_faces_per_frame = get_analysed_data(FACE_ANALYSER, image_sequence, source_data, swap_condition=condition)
+        analysed_targets, analysed_sources, whole_frame_list, num_faces_per_frame = get_analysed_data(
+            FACE_ANALYSER,
+            image_sequence,
+            source_data,
+            swap_condition=condition,
+            detect_condition=DETECT_CONDITION,
+            scale=face_scale
+        )
 
         yield "### \n ⌛ Swapping faces...", *ui_before()
         swapped_data = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
@@ -235,7 +248,8 @@ def process(
                     a = cv2.resize(a, (512,512))
                     m /= 0.25
 
-                whole_img = paste_to_whole(p, a, m, whole_img)
+                #whole_img = paste_to_whole(whole_img, p, m)
+                whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top,crop_bott,crop_left,crop_right))
 
             cv2.imwrite(whole_img_path, whole_img)
 
@@ -538,6 +552,26 @@ with gr.Blocks(css=css) as interface:
                             interactive=True,
                         )
 
+                    face_scale = gr.Slider(
+                        label="Face Scale",
+                        minimum=0,
+                        maximum=2,
+                        value=1,
+                        interactive=True,
+                    )
+
+                    with gr.Accordion("Crop Mask", open=False):
+                        crop_top = gr.Number(label="Top", value=0, minimum=0, interactive=True)
+                        crop_bott = gr.Number(label="Bottom", value=0, minimum=0, interactive=True)
+                        crop_left = gr.Number(label="Left", value=0, minimum=0, interactive=True)
+                        crop_right = gr.Number(label="Right", value=0, minimum=0, interactive=True)
+
+                    enable_laplacian_blend = gr.Checkbox(
+                        label="Laplacian Blending",
+                        value=True,
+                        interactive=True,
+                    )
+
                     face_enhancer_name = gr.Dropdown(
                         face_enhancer_list, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
                     )
@@ -722,6 +756,12 @@ with gr.Blocks(css=css) as interface:
         mask_soft_kernel,
         mask_soft_iterations,
         blur_amount,
+        face_scale,
+        enable_laplacian_blend,
+        crop_top,
+        crop_bott,
+        crop_left,
+        crop_right,
         *src_specific_inputs,
     ]
 

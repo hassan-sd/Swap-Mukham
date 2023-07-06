@@ -98,6 +98,7 @@ def get_mask(parsing, classes):
         res += parsing == val
     return res
 
+
 def swap_regions(source, target, net, smooth_mask, includes=[1,2,3,4,5,10,11,12,13], blur=10):
     parsing = image_to_parsing(source, net)
 
@@ -117,12 +118,10 @@ def swap_regions(source, target, net, smooth_mask, includes=[1,2,3,4,5,10,11,12,
     if blur > 0:
         mask = cv2.GaussianBlur(mask, (0, 0), blur)
 
-    resized_source = cv2.resize((source/255).astype("float32"), (512, 512))
-    resized_target = cv2.resize((target/255).astype("float32"), (512, 512))
-
+    resized_source = cv2.resize((source).astype("float32"), (512, 512))
+    resized_target = cv2.resize((target).astype("float32"), (512, 512))
     result = mask * resized_source + (1 - mask) * resized_target
-    normalized_result = (result - np.min(result)) / (np.max(result) - np.min(result))
-    result = cv2.resize((result*255).astype("uint8"), (source.shape[1], source.shape[0]))
+    result = cv2.resize(result.astype("uint8"), (source.shape[1], source.shape[0]))
 
     return result
 

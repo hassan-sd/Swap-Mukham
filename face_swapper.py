@@ -7,8 +7,33 @@ import numpy as np
 from tqdm import tqdm
 from onnx import numpy_helper
 from utils import add_logo_to_image
-from insightface.utils import face_align
+from skimage import transform as trans
 
+arcface_dst = np.array(
+    [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+     [41.5493, 92.3655], [70.7299, 92.2041]],
+    dtype=np.float32)
+
+def estimate_norm(lmk, image_size=112,mode='arcface'):
+    assert lmk.shape == (5, 2)
+    assert image_size%112==0 or image_size%128==0
+    if image_size%112==0:
+        ratio = float(image_size)/112.0
+        diff_x = 0
+    else:
+        ratio = float(image_size)/128.0
+        diff_x = 8.0*ratio
+    dst = arcface_dst * ratio
+    dst[:,0] += diff_x
+    tform = trans.SimilarityTransform()
+    tform.estimate(lmk, dst)
+    M = tform.params[0:2, :]
+    return M
+
+def norm_crop2(img, landmark, image_size=112, mode='arcface'):
+    M = estimate_norm(landmark, image_size, mode)
+    warped = cv2.warpAffine(img, M, (image_size, image_size), borderValue=0.0)
+    return warped, M
 
 class Inswapper():
     def __init__(self, model_file=None, batch_size=32, providers=['CPUExecutionProvider']):
@@ -33,7 +58,6 @@ class Inswapper():
         input_cfg = inputs[0]
         input_shape = input_cfg.shape
         self.input_shape = input_shape
-        print('inswapper-shape:', self.input_shape)
         self.input_size = tuple(input_shape[2:4][::-1])
 
     def forward(self, imgs, latents):
@@ -49,7 +73,7 @@ class Inswapper():
         for img, target_face, source_face in zip(imgs, target_faces, source_faces):
             if isinstance(img, str):
                 img = cv2.imread(img)
-            aimg, M = face_align.norm_crop2(img, target_face.kps, self.input_size[0])
+            aimg, M = norm_crop2(img, target_face.kps, self.input_size[0])
             blob = cv2.dnn.blobFromImage(aimg, 1.0 / self.input_std, self.input_size,
                                          (self.input_mean, self.input_mean, self.input_mean), swapRB=True)
             latent = source_face.normed_embedding.reshape((1, -1))
@@ -79,11 +103,67 @@ class Inswapper():
 
         return preds
 
+def laplacian_blending(A, B, m, num_levels=4):
+    assert A.shape == B.shape
+    assert B.shape == m.shape
+    height = m.shape[0]
+    width = m.shape[1]
+    size_list = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096])
+    size = size_list[np.where(size_list > max(height, width))][0]
+    GA = np.zeros((size, size, 3), dtype=np.float32)
+    GA[:height, :width, :] = A
+    GB = np.zeros((size, size, 3), dtype=np.float32)
+    GB[:height, :width, :] = B
+    GM = np.zeros((size, size, 3), dtype=np.float32)
+    GM[:height, :width, :] = m
+    gpA = [GA]
+    gpB = [GB]
+    gpM = [GM]
+    for i in range(num_levels):
+        GA = cv2.pyrDown(GA)
+        GB = cv2.pyrDown(GB)
+        GM = cv2.pyrDown(GM)
+        gpA.append(np.float32(GA))
+        gpB.append(np.float32(GB))
+        gpM.append(np.float32(GM))
+    lpA  = [gpA[num_levels-1]]
+    lpB  = [gpB[num_levels-1]]
+    gpMr = [gpM[num_levels-1]]
+    for i in range(num_levels-1,0,-1):
+        LA = np.subtract(gpA[i-1], cv2.pyrUp(gpA[i]))
+        LB = np.subtract(gpB[i-1], cv2.pyrUp(gpB[i]))
+        lpA.append(LA)
+        lpB.append(LB)
+        gpMr.append(gpM[i-1])
+    LS = []
+    for la,lb,gm in zip(lpA,lpB,gpMr):
+        ls = la * gm + lb * (1.0 - gm)
+        LS.append(ls)
+    ls_ = LS[0]
+    for i in range(1,num_levels):
+        ls_ = cv2.pyrUp(ls_)
+        ls_ = cv2.add(ls_, LS[i])
+    ls_ = np.clip(ls_[:height, :width, :], 0, 255)
+    return ls_
 
-def paste_to_whole(bgr_fake, aimg, M, whole_img):
+
+def paste_to_whole(bgr_fake, aimg, M, whole_img, laplacian_blend=True, crop_mask=(0,0,0,0)):
     IM = cv2.invertAffineTransform(M)
 
     img_white = np.full((aimg.shape[0], aimg.shape[1]), 255, dtype=np.float32)
+
+    top = int(crop_mask[0])
+    bottom = int(crop_mask[1])
+    if top + bottom < aimg.shape[1]:
+        if top > 0: img_white[:top, :] = 0
+        if bottom > 0: img_white[-bottom:, :] = 0
+
+    left = int(crop_mask[2])
+    right = int(crop_mask[3])
+    if left + right < aimg.shape[0]:
+        if left > 0: img_white[:, :left] = 0
+        if right > 0: img_white[:, -right:] = 0
+
     bgr_fake = cv2.warpAffine(
         bgr_fake, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
     )
@@ -104,8 +184,12 @@ def paste_to_whole(bgr_fake, aimg, M, whole_img):
     kernel_size = (k, k)
     blur_size = tuple(2 * i + 1 for i in kernel_size)
     img_mask = cv2.GaussianBlur(img_mask, blur_size, 0) / 255
+    img_mask = np.tile(np.expand_dims(img_mask, axis=-1), (1, 1, 3))
 
-    img_mask = np.reshape(img_mask, [img_mask.shape[0], img_mask.shape[1], 1])
+    if laplacian_blend:
+        bgr_fake = laplacian_blending(bgr_fake.astype("float32").clip(0,255), whole_img.astype("float32").clip(0,255), img_mask.clip(0,1))
+        bgr_fake = bgr_fake.astype("float32")
+
     fake_merged = img_mask * bgr_fake + (1 - img_mask) * whole_img.astype(np.float32)
-    fake_merged = add_logo_to_image(fake_merged.astype("uint8"))
+    fake_merged = add_logo_to_image((fake_merged).astype("uint8"))
     return fake_merged

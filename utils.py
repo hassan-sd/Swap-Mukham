@@ -138,3 +138,32 @@ def merge_img_sequence_from_ref(ref_video_path, image_sequence, output_file_name
     edited_video_clip.close()
     video_clip.close()
 
+def scale_bbox_from_center(bbox, scale_width, scale_height, image_width, image_height):
+    # Extract the coordinates of the bbox
+    x1, y1, x2, y2 = bbox
+
+    # Calculate the center point of the bbox
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+
+    # Calculate the new width and height of the bbox based on the scaling factors
+    width = x2 - x1
+    height = y2 - y1
+    new_width = width * scale_width
+    new_height = height * scale_height
+
+    # Calculate the new coordinates of the bbox, considering the image boundaries
+    new_x1 = center_x - new_width / 2
+    new_y1 = center_y - new_height / 2
+    new_x2 = center_x + new_width / 2
+    new_y2 = center_y + new_height / 2
+
+    # Adjust the coordinates to ensure the bbox remains within the image boundaries
+    new_x1 = max(0, new_x1)
+    new_y1 = max(0, new_y1)
+    new_x2 = min(image_width - 1, new_x2)
+    new_y2 = min(image_height - 1, new_y2)
+
+    # Return the scaled bbox coordinates
+    scaled_bbox = [new_x1, new_y1, new_x2, new_y2]
+    return scaled_bbox
