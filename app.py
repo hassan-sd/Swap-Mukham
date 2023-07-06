@@ -12,23 +12,21 @@ import insightface
 import onnxruntime
 import numpy as np
 import gradio as gr
-from moviepy.editor import VideoFileClip, ImageSequenceClip
+from tqdm import tqdm
+from moviepy.editor import VideoFileClip
 
-from face_analyser import detect_conditions, analyse_face
-from face_enhancer import load_face_enhancer_model, face_enhancer_list
-from utils import trim_video, StreamerThread, ProcessBar, open_directory
+from face_swapper import Inswapper, paste_to_whole
+from face_analyser import detect_conditions, get_analysed_data, swap_options_list
+from face_enhancer import load_face_enhancer_model, face_enhancer_list, gfpgan_enhance, realesrgan_enhance
 from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
-from swapper import (
-    swap_face,
-    swap_face_with_condition,
-    swap_specific,
-    swap_options_list,
-)
+from utils import trim_video, StreamerThread, ProcessBar, open_directory, split_list_by_lengths, merge_img_sequence_from_ref
+
 
 ## ------------------------------ USER ARGS ------------------------------
 
 parser = argparse.ArgumentParser(description="Swap-Mukham Face Swapper")
 parser.add_argument("--out_dir", help="Default Output directory", default=os.getcwd())
+parser.add_argument("--batch_size", help="Gpu batch size", default=32)
 parser.add_argument("--cuda", action="store_true", help="Enable cuda", default=False)
 parser.add_argument(
     "--colab", action="store_true", help="Enable colab mode", default=False
@@ -40,11 +38,12 @@ user_args = parser.parse_args()
 USE_COLAB = user_args.colab
 USE_CUDA = user_args.cuda
 DEF_OUTPUT_PATH = user_args.out_dir
+BATCH_SIZE = user_args.batch_size
 WORKSPACE = None
 OUTPUT_FILE = None
 CURRENT_FRAME = None
 STREAMER = None
-DETECT_CONDITION = "left most"
+DETECT_CONDITION = "best detection"
 DETECT_SIZE = 640
 DETECT_THRESH = 0.6
 NUM_OF_SRC_SPECIFIC = 10
@@ -103,7 +102,8 @@ def load_face_swapper_model(name="./assets/pretrained_models/inswapper_128.onnx"
     global FACE_SWAPPER
     path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_SWAPPER is None:
-        FACE_SWAPPER = insightface.model_zoo.get_model(path, providers=PROVIDER)
+        batch = int(BATCH_SIZE) if device == "cuda" else 1
+        FACE_SWAPPER = Inswapper(model_file=name, batch_size=batch, providers=PROVIDER)
 
 
 def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
@@ -137,6 +137,12 @@ def process(
     mask_soft_kernel,
     mask_soft_iterations,
     blur_amount,
+    face_scale,
+    enable_laplacian_blend,
+    crop_top,
+    crop_bott,
+    crop_left,
+    crop_right,
     *specifics,
 ):
     global WORKSPACE
@@ -170,12 +176,11 @@ def process(
             gr.update(value=OUTPUT_FILE, visible=True),
         )
 
-    ## ------------------------------ LOAD PENDING MODELS ------------------------------
     start_time = time.time()
-    specifics = list(specifics)
-    half = len(specifics) // 2
-    sources = specifics[:half]
-    specifics = specifics[half:]
+    total_exec_time = lambda start_time: divmod(time.time() - start_time, 60)
+    get_finsh_text = lambda start_time: f"✔️ Completed in {int(total_exec_time(start_time)[0])} min {int(total_exec_time(start_time)[1])} sec."
+
+    ## ------------------------------ PREPARE INPUTS & LOAD MODELS ------------------------------
 
     yield "### \n ⌛ Loading face analyser model...", *ui_before()
     load_face_analyser_model()
@@ -185,86 +190,85 @@ def process(
 
     if face_enhancer_name != "NONE":
         yield f"### \n ⌛ Loading {face_enhancer_name} model...", *ui_before()
-        face_enhancer_model = load_face_enhancer_model(name=face_enhancer_name, device=device)
+        FACE_ENHANCER = load_face_enhancer_model(name=face_enhancer_name, device=device)
     else:
-        face_enhancer_model = None
+        FACE_ENHANCER = None
 
     if enable_face_parser:
         yield "### \n ⌛ Loading face parsing model...", *ui_before()
         load_face_parser_model()
 
-    yield "### \n ⌛ Analysing Face...", *ui_before()
-
     includes = mask_regions_to_list(mask_includes)
-    if mask_soft_iterations > 0:
-        smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=int(mask_soft_iterations)).to(device)
-    else:
-        smooth_mask = None
+    smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=int(mask_soft_iterations)).to(device) if mask_soft_iterations > 0 else None
+    specifics = list(specifics)
+    half = len(specifics) // 2
+    sources = specifics[:half]
+    specifics = specifics[half:]
 
-    models = {
-        "swap": FACE_SWAPPER,
-        "enhancer": (face_enhancer_model, face_enhancer_name),
-        "face_parser": FACE_PARSER,
-        "face_parser_settings": (enable_face_parser, includes, smooth_mask, int(blur_amount))
-    }
+    ## ------------------------------ ANALYSE & SWAP FUNC ------------------------------
 
-    ## ------------------------------ ANALYSE SOURCE & SPECIFIC ------------------------------
-
-    analysed_source_specific = []
-    if condition == "Specific Face":
-        for source, specific in zip(sources, specifics):
-            if source is None or specific is None:
-                continue
-            analysed_source = analyse_face(
-                source,
-                FACE_ANALYSER,
-                return_single_face=True,
-                detect_condition=DETECT_CONDITION,
-            )
-            analysed_specific = analyse_face(
-                specific,
-                FACE_ANALYSER,
-                return_single_face=True,
-                detect_condition=DETECT_CONDITION,
-            )
-            analysed_source_specific.append([analysed_source, analysed_specific])
-    else:
-        source = cv2.imread(source_path)
-        analysed_source = analyse_face(
-            source,
+    def swap_process(image_sequence):
+        yield "### \n ⌛ Analysing face data...", *ui_before()
+        if condition != "Specific Face":
+            source_data = source_path, age
+        else:
+            source_data = ((sources, specifics), distance)
+        analysed_targets, analysed_sources, whole_frame_list, num_faces_per_frame = get_analysed_data(
             FACE_ANALYSER,
-            return_single_face=True,
+            image_sequence,
+            source_data,
+            swap_condition=condition,
             detect_condition=DETECT_CONDITION,
+            scale=face_scale
         )
+
+        yield "### \n ⌛ Swapping faces...", *ui_before()
+        swapped_data = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
+
+        yield "### \n ⌛ Post-processing...", *ui_before()
+        split_swapped_data = split_list_by_lengths(swapped_data, num_faces_per_frame)
+        split_swapped_data_len = len(split_swapped_data)
+
+        for idx, datas in tqdm(enumerate(split_swapped_data), total=split_swapped_data_len, desc="Post-processing"):
+            whole_img_path = image_sequence[idx]
+            whole_img = cv2.imread(whole_img_path)
+            for data in datas:
+                p, a, m = data
+
+                if enable_face_parser:
+                    p = swap_regions(p, a, FACE_PARSER, smooth_mask, includes=includes, blur=int(blur_amount))
+
+                if face_enhancer_name != "NONE":
+                    if face_enhancer_name == 'GFPGAN':
+                        p = gfpgan_enhance(p, FACE_ENHANCER)
+                    elif face_enhancer_name.startswith("REAL-ESRGAN"):
+                        p = realesrgan_enhance(p, FACE_ENHANCER)
+
+                    p = cv2.resize(p, (512,512))
+                    a = cv2.resize(a, (512,512))
+                    m /= 0.25
+
+                #whole_img = paste_to_whole(whole_img, p, m)
+                whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top,crop_bott,crop_left,crop_right))
+
+            cv2.imwrite(whole_img_path, whole_img)
+
 
     ## ------------------------------ IMAGE ------------------------------
 
     if input_type == "Image":
         target = cv2.imread(image_path)
-        analysed_target = analyse_face(target, FACE_ANALYSER, return_single_face=False)
-        if condition == "Specific Face":
-            swapped = swap_specific(
-                analysed_source_specific,
-                analysed_target,
-                target,
-                models,
-                threshold=distance,
-            )
-        else:
-            swapped = swap_face_with_condition(
-                target, analysed_target, analysed_source, condition, age, models
-            )
+        output_file = os.path.join(output_path, output_name + ".png")
+        cv2.imwrite(output_file, target)
 
-        filename = os.path.join(output_path, output_name + ".png")
-        cv2.imwrite(filename, swapped)
-        OUTPUT_FILE = filename
+        for info_update in swap_process([output_file]):
+            yield info_update
+
+        OUTPUT_FILE = output_file
         WORKSPACE = output_path
-        PREVIEW = swapped[:, :, ::-1]
+        PREVIEW = cv2.imread(output_file)[:, :, ::-1]
 
-        tot_exec_time = time.time() - start_time
-        _min, _sec = divmod(tot_exec_time, 60)
-
-        yield f"Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
+        yield get_finsh_text(start_time), *ui_after()
 
     ## ------------------------------ VIDEO ------------------------------
 
@@ -272,72 +276,26 @@ def process(
         temp_path = os.path.join(output_path, output_name, "sequence")
         os.makedirs(temp_path, exist_ok=True)
 
-        video_clip = VideoFileClip(video_path)
-        duration = video_clip.duration
-        fps = video_clip.fps
-        total_frames = video_clip.reader.nframes
-
-        analysed_targets = []
-        process_bar = ProcessBar(30, total_frames)
-        yield "### \n ⌛ Analysing...", *ui_before()
-        for i, frame in enumerate(video_clip.iter_frames()):
-            analysed_targets.append(
-                analyse_face(frame, FACE_ANALYSER, return_single_face=False)
-            )
-            info_text = "Analysing Faces || "
-            info_text += process_bar.get(i)
-            print("\033[1A\033[K", end="", flush=True)
-            print(info_text)
-            if i % 10 == 0:
-                yield "### \n" + info_text, *ui_before()
-        video_clip.close()
-
+        yield "### \n ⌛ Extracting video frames...", *ui_before()
         image_sequence = []
-        video_clip = VideoFileClip(video_path)
-        audio_clip = video_clip.audio if video_clip.audio is not None else None
-        process_bar = ProcessBar(30, total_frames)
-        yield "### \n ⌛ Swapping...", *ui_before()
-        for i, frame in enumerate(video_clip.iter_frames()):
-            swapped = frame
-            analysed_target = analysed_targets[i]
+        cap = cv2.VideoCapture(video_path)
+        curr_idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:break
+            frame_path = os.path.join(temp_path, f"frame_{curr_idx}.jpg")
+            cv2.imwrite(frame_path, frame)
+            image_sequence.append(frame_path)
+            curr_idx += 1
+        cap.release()
+        cv2.destroyAllWindows()
 
-            if condition == "Specific Face":
-                swapped = swap_specific(
-                    analysed_source_specific,
-                    analysed_target,
-                    frame,
-                    models,
-                    threshold=distance,
-                )
-            else:
-                swapped = swap_face_with_condition(
-                    frame, analysed_target, analysed_source, condition, age, models
-                )
+        for info_update in swap_process(image_sequence):
+            yield info_update
 
-            image_path = os.path.join(temp_path, f"frame_{i}.png")
-            cv2.imwrite(image_path, swapped[:, :, ::-1])
-            image_sequence.append(image_path)
-
-            info_text = "Swapping Faces || "
-            info_text += process_bar.get(i)
-            print("\033[1A\033[K", end="", flush=True)
-            print(info_text)
-            if i % 6 == 0:
-                PREVIEW = swapped
-                yield "### \n" + info_text, *ui_before()
-
-        yield "### \n ⌛ Merging...", *ui_before()
-        edited_video_clip = ImageSequenceClip(image_sequence, fps=fps)
-
-        if audio_clip is not None:
-            edited_video_clip = edited_video_clip.set_audio(audio_clip)
-
+        yield "### \n ⌛ Merging sequence...", *ui_before()
         output_video_path = os.path.join(output_path, output_name + ".mp4")
-        edited_video_clip.set_duration(duration).write_videofile(
-            output_video_path, codec="libx264"
-        )
-        edited_video_clip.close()
-        video_clip.close()
+        merge_img_sequence_from_ref(video_path, image_sequence, output_video_path)
 
         if os.path.exists(temp_path) and not keep_output_sequence:
             yield "### \n ⌛ Removing temporary files...", *ui_before()
@@ -346,99 +304,38 @@ def process(
         WORKSPACE = output_path
         OUTPUT_FILE = output_video_path
 
-        tot_exec_time = time.time() - start_time
-        _min, _sec = divmod(tot_exec_time, 60)
-
-        yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after_vid()
+        yield get_finsh_text(start_time), *ui_after_vid()
 
     ## ------------------------------ DIRECTORY ------------------------------
 
     elif input_type == "Directory":
-        source = cv2.imread(source_path)
-        source = analyse_face(
-            source,
-            FACE_ANALYSER,
-            return_single_face=True,
-            detect_condition=DETECT_CONDITION,
-        )
         extensions = ["jpg", "jpeg", "png", "bmp", "tiff", "ico", "webp"]
         temp_path = os.path.join(output_path, output_name)
         if os.path.exists(temp_path):
             shutil.rmtree(temp_path)
         os.mkdir(temp_path)
-        swapped = None
 
-        files = []
+        file_paths =[]
         for file_path in glob.glob(os.path.join(directory_path, "*")):
             if any(file_path.lower().endswith(ext) for ext in extensions):
-                files.append(file_path)
+                img = cv2.imread(file_path)
+                new_file_path = os.path.join(temp_path, os.path.basename(file_path))
+                cv2.imwrite(new_file_path, img)
+                file_paths.append(new_file_path)
 
-        files_length = len(files)
-        filename = None
-        for i, file_path in enumerate(files):
-            target = cv2.imread(file_path)
-            analysed_target = analyse_face(
-                target, FACE_ANALYSER, return_single_face=False
-            )
+        for info_update in swap_process(file_paths):
+            yield info_update
 
-            if condition == "Specific Face":
-                swapped = swap_specific(
-                    analysed_source_specific,
-                    analysed_target,
-                    target,
-                    models,
-                    threshold=distance,
-                )
-            else:
-                swapped = swap_face_with_condition(
-                    target, analysed_target, analysed_source, condition, age, models
-                )
-
-            filename = os.path.join(temp_path, os.path.basename(file_path))
-            cv2.imwrite(filename, swapped)
-            info_text = f"### \n ⌛ Processing file {i+1} of {files_length}"
-            PREVIEW = swapped[:, :, ::-1]
-            yield info_text, *ui_before()
-
+        PREVIEW = cv2.imread(file_paths[-1])[:, :, ::-1]
         WORKSPACE = temp_path
-        OUTPUT_FILE = filename
+        OUTPUT_FILE = file_paths[-1]
 
-        tot_exec_time = time.time() - start_time
-        _min, _sec = divmod(tot_exec_time, 60)
-
-        yield f"✔️ Completed in {int(_min)} min {int(_sec)} sec.", *ui_after()
+        yield get_finsh_text(start_time), *ui_after()
 
     ## ------------------------------ STREAM ------------------------------
 
     elif input_type == "Stream":
-        yield "### \n ⌛ Starting...", *ui_before()
-        global STREAMER
-        STREAMER = StreamerThread(src=directory_path)
-        STREAMER.start()
-
-        while True:
-            try:
-                target = STREAMER.frame
-                analysed_target = analyse_face(
-                    target, FACE_ANALYSER, return_single_face=False
-                )
-                if condition == "Specific Face":
-                    swapped = swap_specific(
-                        target,
-                        analysed_target,
-                        analysed_source_specific,
-                        models,
-                        threshold=distance,
-                    )
-                else:
-                    swapped = swap_face_with_condition(
-                        target, analysed_target, analysed_source, condition, age, models
-                    )
-                PREVIEW = swapped[:, :, ::-1]
-                yield f"Streaming...", *ui_before()
-            except AttributeError:
-                yield "Streaming...", *ui_before()
-        STREAMER.stop()
+        pass
 
 
 ## ------------------------------ GRADIO FUNC ------------------------------
@@ -655,6 +552,26 @@ with gr.Blocks(css=css) as interface:
                             interactive=True,
                         )
 
+                    face_scale = gr.Slider(
+                        label="Face Scale",
+                        minimum=0,
+                        maximum=2,
+                        value=1,
+                        interactive=True,
+                    )
+
+                    with gr.Accordion("Crop Mask", open=False):
+                        crop_top = gr.Number(label="Top", value=0, minimum=0, interactive=True)
+                        crop_bott = gr.Number(label="Bottom", value=0, minimum=0, interactive=True)
+                        crop_left = gr.Number(label="Left", value=0, minimum=0, interactive=True)
+                        crop_right = gr.Number(label="Right", value=0, minimum=0, interactive=True)
+
+                    enable_laplacian_blend = gr.Checkbox(
+                        label="Laplacian Blending",
+                        value=True,
+                        interactive=True,
+                    )
+
                     face_enhancer_name = gr.Dropdown(
                         face_enhancer_list, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
                     )
@@ -684,7 +601,7 @@ with gr.Blocks(css=css) as interface:
 
                 with gr.Group():
                     input_type = gr.Radio(
-                        ["Image", "Video", "Directory", "Stream"],
+                        ["Image", "Video", "Directory"],
                         label="Target Type",
                         value="Video",
                     )
@@ -788,14 +705,14 @@ with gr.Blocks(css=css) as interface:
         fn=slider_changed,
         inputs=[show_trim_preview_btn, video_input, start_frame],
         outputs=[preview_image, preview_video],
-        show_progress=False,
+        show_progress=True,
     )
 
     end_frame_event = end_frame.release(
         fn=slider_changed,
         inputs=[show_trim_preview_btn, video_input, end_frame],
         outputs=[preview_image, preview_video],
-        show_progress=False,
+        show_progress=True,
     )
 
     input_type.change(
@@ -839,6 +756,12 @@ with gr.Blocks(css=css) as interface:
         mask_soft_kernel,
         mask_soft_iterations,
         blur_amount,
+        face_scale,
+        enable_laplacian_blend,
+        crop_top,
+        crop_bott,
+        crop_left,
+        crop_right,
         *src_specific_inputs,
     ]
 
@@ -851,7 +774,7 @@ with gr.Blocks(css=css) as interface:
     ]
 
     swap_event = swap_button.click(
-        fn=process, inputs=swap_inputs, outputs=swap_outputs, show_progress=False
+        fn=process, inputs=swap_inputs, outputs=swap_outputs, show_progress=True
     )
 
     cancel_button.click(
@@ -865,7 +788,7 @@ with gr.Blocks(css=css) as interface:
             start_frame_event,
             end_frame_event,
         ],
-        show_progress=False,
+        show_progress=True,
     )
     output_directory_button.click(
         lambda: open_directory(path=WORKSPACE), inputs=None, outputs=None

@@ -29,3 +29,11 @@ def load_face_enhancer_model(name='GFPGAN', device="cpu"):
     else:
         model = None
     return model
+
+def gfpgan_enhance(img, model, has_aligned=True):
+    _, imgs, _ = model.enhance(img, paste_back=True, has_aligned=has_aligned)
+    return imgs[0]
+
+def realesrgan_enhance(img, model):
+    img = model.predict(img)
+    return img
