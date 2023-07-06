@@ -40,7 +40,7 @@ conda create -n swapmukham python=3.10 -y
 conda activate swapmukham
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.8 -c pytorch -c nvidia
 pip install -r requirements.txt
-python app.py --cuda
+python app.py --cuda --batch_size 32
 ````
 ## Downolad Models
 - [inswapper_128.onnx](https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128.onnx)
