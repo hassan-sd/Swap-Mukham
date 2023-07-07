@@ -6,7 +6,6 @@ import onnxruntime
 import numpy as np
 from tqdm import tqdm
 from onnx import numpy_helper
-from utils import add_logo_to_image
 from skimage import transform as trans
 
 arcface_dst = np.array(
@@ -14,26 +13,28 @@ arcface_dst = np.array(
      [41.5493, 92.3655], [70.7299, 92.2041]],
     dtype=np.float32)
 
-def estimate_norm(lmk, image_size=112,mode='arcface'):
+def estimate_norm(lmk, image_size=112, mode='arcface'):
     assert lmk.shape == (5, 2)
-    assert image_size%112==0 or image_size%128==0
-    if image_size%112==0:
-        ratio = float(image_size)/112.0
+    assert image_size % 112 == 0 or image_size % 128 == 0
+    if image_size % 112 == 0:
+        ratio = float(image_size) / 112.0
         diff_x = 0
     else:
-        ratio = float(image_size)/128.0
-        diff_x = 8.0*ratio
+        ratio = float(image_size) / 128.0
+        diff_x = 8.0 * ratio
     dst = arcface_dst * ratio
-    dst[:,0] += diff_x
+    dst[:, 0] += diff_x
     tform = trans.SimilarityTransform()
     tform.estimate(lmk, dst)
     M = tform.params[0:2, :]
     return M
 
+
 def norm_crop2(img, landmark, image_size=112, mode='arcface'):
     M = estimate_norm(landmark, image_size, mode)
     warped = cv2.warpAffine(img, M, (image_size, image_size), borderValue=0.0)
     return warped, M
+
 
 class Inswapper():
     def __init__(self, model_file=None, batch_size=32, providers=['CPUExecutionProvider']):
@@ -70,6 +71,8 @@ class Inswapper():
 
     def get(self, imgs, target_faces, source_faces):
         batch_preds = []
+        batch_aimgs = []
+        batch_ms = []
         for img, target_face, source_face in zip(imgs, target_faces, source_faces):
             if isinstance(img, str):
                 img = cv2.imread(img)
@@ -80,16 +83,20 @@ class Inswapper():
             latent = np.dot(latent, self.emap)
             latent /= np.linalg.norm(latent)
             pred = self.session.run(self.output_names, {self.input_names[0]: blob, self.input_names[1]: latent})[0]
-            pred = pred.transpose((0,2,3,1))[0]
-            pred = np.clip(255 * pred, 0, 255).astype(np.uint8)[:,:,::-1]
-            batch_preds.append((pred,aimg,M))
-        return batch_preds
+            pred = pred.transpose((0, 2, 3, 1))[0]
+            pred = np.clip(255 * pred, 0, 255).astype(np.uint8)[:, :, ::-1]
+            batch_preds.append(pred)
+            batch_aimgs.append(aimg)
+            batch_ms.append(M)
+        return batch_preds, batch_aimgs, batch_ms
 
     def batch_forward(self, img_list, target_f_list, source_f_list):
         num_samples = len(img_list)
         num_batches = (num_samples + self.batch_size - 1) // self.batch_size
 
         preds = []
+        aimgs = []
+        ms = []
         for i in tqdm(range(num_batches), desc="Swapping face by batch"):
             start_idx = i * self.batch_size
             end_idx = min((i + 1) * self.batch_size, num_samples)
@@ -98,10 +105,12 @@ class Inswapper():
             batch_target_f = target_f_list[start_idx:end_idx]
             batch_source_f = source_f_list[start_idx:end_idx]
 
-            batch_pred = self.get(batch_img, batch_target_f, batch_source_f)
+            batch_pred, batch_aimg, batch_m = self.get(batch_img, batch_target_f, batch_source_f)
             preds.extend(batch_pred)
+            aimgs.extend(batch_aimg)
+            ms.extend(batch_m)
+        return preds, aimgs, ms
 
-        return preds
 
 def laplacian_blending(A, B, m, num_levels=4):
     assert A.shape == B.shape
@@ -191,5 +200,4 @@ def paste_to_whole(bgr_fake, aimg, M, whole_img, laplacian_blend=True, crop_mask
         bgr_fake = bgr_fake.astype("float32")
 
     fake_merged = img_mask * bgr_fake + (1 - img_mask) * whole_img.astype(np.float32)
-    fake_merged = add_logo_to_image((fake_merged).astype("uint8"))
-    return fake_merged
+    return fake_merged.astype("uint8")

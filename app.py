@@ -15,6 +15,7 @@ import gradio as gr
 from tqdm import tqdm
 from moviepy.editor import VideoFileClip
 
+from nsfw_detector import get_nsfw_detector
 from face_swapper import Inswapper, paste_to_whole
 from face_analyser import detect_conditions, get_analysed_data, swap_options_list
 from face_enhancer import load_face_enhancer_model, face_enhancer_list, gfpgan_enhance, realesrgan_enhance
@@ -66,6 +67,7 @@ FACE_SWAPPER = None
 FACE_ANALYSER = None
 FACE_ENHANCER = None
 FACE_PARSER = None
+NSFW_DETECTOR = None
 
 ## ------------------------------ SET EXECUTION PROVIDER ------------------------------
 # Note: For AMD,MAC or non CUDA users, change settings here
@@ -98,19 +100,22 @@ def load_face_analyser_model(name="buffalo_l"):
         )
 
 
-def load_face_swapper_model(name="./assets/pretrained_models/inswapper_128.onnx"):
+def load_face_swapper_model(path="./assets/pretrained_models/inswapper_128.onnx"):
     global FACE_SWAPPER
-    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_SWAPPER is None:
         batch = int(BATCH_SIZE) if device == "cuda" else 1
-        FACE_SWAPPER = Inswapper(model_file=name, batch_size=batch, providers=PROVIDER)
+        FACE_SWAPPER = Inswapper(model_file=path, batch_size=batch, providers=PROVIDER)
 
 
-def load_face_parser_model(name="./assets/pretrained_models/79999_iter.pth"):
+def load_face_parser_model(path="./assets/pretrained_models/79999_iter.pth"):
     global FACE_PARSER
-    path = os.path.join(os.path.abspath(os.path.dirname(__file__)), name)
     if FACE_PARSER is None:
-        FACE_PARSER = init_parser(name, mode=device)
+        FACE_PARSER = init_parser(path, mode=device)
+
+def load_nsfw_detector_model(path="./assets/pretrained_models/nsfwmodel_281.pth"):
+    global NSFW_DETECTOR
+    if NSFW_DETECTOR is None:
+        NSFW_DETECTOR = get_nsfw_detector(model_path=path, device=device)
 
 
 load_face_analyser_model()
@@ -181,6 +186,8 @@ def process(
     get_finsh_text = lambda start_time: f"✔️ Completed in {int(total_exec_time(start_time)[0])} min {int(total_exec_time(start_time)[1])} sec."
 
     ## ------------------------------ PREPARE INPUTS & LOAD MODELS ------------------------------
+    yield "### \n ⌛ Loading NSFW detector model...", *ui_before()
+    load_nsfw_detector_model()
 
     yield "### \n ⌛ Loading face analyser model...", *ui_before()
     load_face_analyser_model()
@@ -208,6 +215,15 @@ def process(
     ## ------------------------------ ANALYSE & SWAP FUNC ------------------------------
 
     def swap_process(image_sequence):
+        yield "### \n ⌛ Checking contents...", *ui_before()
+        nsfw = NSFW_DETECTOR.is_nsfw(image_sequence)
+        if nsfw:
+            message = "NSFW Content detected !!!"
+            yield f"### \n 🔞 {message}", *ui_before()
+            assert not nsfw, message
+            return False
+        if device == "cuda": torch.cuda.empty_cache()
+
         yield "### \n ⌛ Analysing face data...", *ui_before()
         if condition != "Specific Face":
             source_data = source_path, age
@@ -223,34 +239,38 @@ def process(
         )
 
         yield "### \n ⌛ Swapping faces...", *ui_before()
-        swapped_data = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
+        preds, aimgs, matrs = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
+        torch.cuda.empty_cache()
+
+        if enable_face_parser:
+            yield "### \n ⌛ Applying face-parsing mask...", *ui_before()
+            for idx, (pred, aimg) in tqdm(enumerate(zip(preds, aimgs)), total=len(preds), desc="Face parsing"):
+                preds[idx] = swap_regions(pred, aimg, FACE_PARSER, smooth_mask, includes=includes, blur=int(blur_amount))
+            torch.cuda.empty_cache()
+
+        if face_enhancer_name != "NONE":
+            yield f"### \n ⌛ Enhancing faces with {face_enhancer_name}...", *ui_before()
+            for idx, pred in tqdm(enumerate(preds), total=len(preds), desc=f"{face_enhancer_name}"):
+                if face_enhancer_name == 'GFPGAN':
+                    pred = gfpgan_enhance(pred, FACE_ENHANCER)
+                elif face_enhancer_name.startswith("REAL-ESRGAN"):
+                    pred = realesrgan_enhance(pred, FACE_ENHANCER)
+
+                preds[idx] = cv2.resize(pred, (512,512))
+                aimgs[idx] = cv2.resize(aimgs[idx], (512,512))
+                matrs[idx] /= 0.25
+        torch.cuda.empty_cache()
+
+        split_preds = split_list_by_lengths(preds, num_faces_per_frame)
+        split_aimgs = split_list_by_lengths(aimgs, num_faces_per_frame)
+        split_matrs = split_list_by_lengths(matrs, num_faces_per_frame)
 
         yield "### \n ⌛ Post-processing...", *ui_before()
-        split_swapped_data = split_list_by_lengths(swapped_data, num_faces_per_frame)
-        split_swapped_data_len = len(split_swapped_data)
-
-        for idx, datas in tqdm(enumerate(split_swapped_data), total=split_swapped_data_len, desc="Post-processing"):
-            whole_img_path = image_sequence[idx]
+        for idx, frame_img in tqdm(enumerate(image_sequence), total=len(image_sequence), desc="Post-Processing"):
+            whole_img_path = frame_img
             whole_img = cv2.imread(whole_img_path)
-            for data in datas:
-                p, a, m = data
-
-                if enable_face_parser:
-                    p = swap_regions(p, a, FACE_PARSER, smooth_mask, includes=includes, blur=int(blur_amount))
-
-                if face_enhancer_name != "NONE":
-                    if face_enhancer_name == 'GFPGAN':
-                        p = gfpgan_enhance(p, FACE_ENHANCER)
-                    elif face_enhancer_name.startswith("REAL-ESRGAN"):
-                        p = realesrgan_enhance(p, FACE_ENHANCER)
-
-                    p = cv2.resize(p, (512,512))
-                    a = cv2.resize(a, (512,512))
-                    m /= 0.25
-
-                #whole_img = paste_to_whole(whole_img, p, m)
+            for p, a, m in zip(split_preds[idx], split_aimgs[idx], split_matrs[idx]):
                 whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top,crop_bott,crop_left,crop_right))
-
             cv2.imwrite(whole_img_path, whole_img)
 
 

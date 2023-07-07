@@ -49,6 +49,7 @@ python app.py --cuda --batch_size 32
 - [RealESRGAN_x2.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x2.pth)
 - [RealESRGAN_x4.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth)
 - [RealESRGAN_x8.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x8.pth)
+- [nsfwmodel_281.pth](https://github.com/Whiax/NSFW-Classifier/raw/main/nsfwmodel_281.pth)
 - place these models inside ``/assets/pretrained_models/``
 
 ## Disclaimer
@@ -89,6 +90,7 @@ Remember, technology should be used to empower and inspire, not to harm or decei
 - [Wav2lip HQ](https://github.com/Markfryazino/wav2lip-hq)
 - [Face Parsing](https://github.com/zllrunning/face-parsing.PyTorch)
 - [Real-ESRGAN (ai-forever)](https://github.com/ai-forever/Real-ESRGAN)
+- [NSFW-Classifier](https://github.com/Whiax/NSFW-Classifier)
 
 ## Loved my work?
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)
