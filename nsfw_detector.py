@@ -55,7 +55,7 @@ def get_nsfw_detector(model_path='nsfwmodel_281.pth', device="cpu"):
     nsfw_model = nsfw_model.eval()
     #load linear weights
     linear_pth = model_path
-    linear_state_dict = torch.load(linear_pth)
+    linear_state_dict = torch.load(linear_pth, map_location='cpu')
     nsfw_model.linear_probe.load_state_dict(linear_state_dict)
     nsfw_model = nsfw_model.to(device)
     return nsfw_model
