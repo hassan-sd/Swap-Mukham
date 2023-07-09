@@ -431,13 +431,13 @@ def update_radio(value):
 
 
 def swap_option_changed(value):
-    if value == swap_options_list[1] or value == swap_options_list[2]:
+    if value.startswith("Age"):
         return (
             gr.update(visible=True),
             gr.update(visible=False),
             gr.update(visible=True),
         )
-    elif value == swap_options_list[5]:
+    elif value == "Specific Face":
         return (
             gr.update(visible=False),
             gr.update(visible=True),
@@ -537,8 +537,10 @@ with gr.Blocks(css=css) as interface:
         with gr.Row():
             with gr.Column(scale=0.4):
                 with gr.Tab("📄 Swap Condition"):
-                    swap_option = gr.Radio(
+                    swap_option = gr.Dropdown(
                         swap_options_list,
+                        info="Choose which face or faces in the target image to swap.",
+                        multiselect=False,
                         show_label=False,
                         value=swap_options_list[0],
                         interactive=True,

@@ -5,23 +5,57 @@ from tqdm import tqdm
 from utils import scale_bbox_from_center
 
 detect_conditions = [
+    "best detection",
     "left most",
     "right most",
     "top most",
     "bottom most",
-    "most width",
-    "most height",
-    "best detection",
+    "middle",
+    "biggest",
+    "smallest",
 ]
 
 swap_options_list = [
-    "All face",
+    "All Face",
+    "Specific Face",
     "Age less than",
     "Age greater than",
     "All Male",
     "All Female",
-    "Specific Face",
+    "Left Most",
+    "Right Most",
+    "Top Most",
+    "Bottom Most",
+    "Middle",
+    "Biggest",
+    "Smallest",
 ]
+
+def get_single_face(faces, method="best detection"):
+    total_faces = len(faces)
+    if total_faces == 1:
+        return faces[0]
+
+    print(f"{total_faces} face detected. Using {method} face.")
+    if method == "best detection":
+        return sorted(faces, key=lambda face: face["det_score"])[-1]
+    elif method == "left most":
+        return sorted(faces, key=lambda face: face["bbox"][0])[0]
+    elif method == "right most":
+        return sorted(faces, key=lambda face: face["bbox"][0])[-1]
+    elif method == "top most":
+        return sorted(faces, key=lambda face: face["bbox"][1])[0]
+    elif method == "bottom most":
+        return sorted(faces, key=lambda face: face["bbox"][1])[-1]
+    elif method == "middle":
+        return sorted(faces, key=lambda face: (
+                (face["bbox"][0] + face["bbox"][2]) / 2 - 0.5) ** 2 +
+                ((face["bbox"][1] + face["bbox"][3]) / 2 - 0.5) ** 2)[len(faces) // 2]
+    elif method == "biggest":
+        return sorted(faces, key=lambda face: (face["bbox"][2] - face["bbox"][0]) * (face["bbox"][3] - face["bbox"][1]))[-1]
+    elif method == "smallest":
+        return sorted(faces, key=lambda face: (face["bbox"][2] - face["bbox"][0]) * (face["bbox"][3] - face["bbox"][1]))[0]
+
 
 def analyse_face(image, model, return_single_face=True, detect_condition="best detection", scale=1.0):
     faces = model.get(image)
@@ -35,25 +69,7 @@ def analyse_face(image, model, return_single_face=True, detect_condition="best d
     if not return_single_face:
         return faces
 
-    total_faces = len(faces)
-    if total_faces == 1:
-        return faces[0]
-
-    print(f"{total_faces} face detected. Using {detect_condition} face.")
-    if detect_condition == "left most":
-        return sorted(faces, key=lambda face: face["bbox"][0])[0]
-    elif detect_condition == "right most":
-        return sorted(faces, key=lambda face: face["bbox"][0])[-1]
-    elif detect_condition == "top most":
-        return sorted(faces, key=lambda face: face["bbox"][1])[0]
-    elif detect_condition == "bottom most":
-        return sorted(faces, key=lambda face: face["bbox"][1])[-1]
-    elif detect_condition == "most width":
-        return sorted(faces, key=lambda face: face["bbox"][2])[-1]
-    elif detect_condition == "most height":
-        return sorted(faces, key=lambda face: face["bbox"][3])[-1]
-    elif detect_condition == "best detection":
-        return sorted(faces, key=lambda face: face["det_score"])[-1]
+    return get_single_face(faces, method=detect_condition)
 
 
 def cosine_distance(a, b):
@@ -90,7 +106,7 @@ def get_analysed_data(face_analyser, image_sequence, source_data, swap_condition
 
         n_faces = 0
         for analysed_face in analysed_faces:
-            if swap_condition == "All face":
+            if swap_condition == "All Face":
                 analysed_target_list.append(analysed_face)
                 analysed_source_list.append(analysed_source)
                 whole_frame_eql_list.append(frame_path)
@@ -123,6 +139,55 @@ def get_analysed_data(face_analyser, image_sequence, source_data, swap_condition
                         analysed_source_list.append(analysed_source)
                         whole_frame_eql_list.append(frame_path)
                         n_faces += 1
+
+        if swap_condition == "Left Most":
+            analysed_face = get_single_face(analysed_faces, method="left most")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Right Most":
+            analysed_face = get_single_face(analysed_faces, method="right most")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Top Most":
+            analysed_face = get_single_face(analysed_faces, method="top most")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Bottom Most":
+            analysed_face = get_single_face(analysed_faces, method="bottom most")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Middle":
+            analysed_face = get_single_face(analysed_faces, method="middle")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Biggest":
+            analysed_face = get_single_face(analysed_faces, method="biggest")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
+
+        elif swap_condition == "Smallest":
+            analysed_face = get_single_face(analysed_faces, method="smallest")
+            analysed_target_list.append(analysed_face)
+            analysed_source_list.append(analysed_source)
+            whole_frame_eql_list.append(frame_path)
+            n_faces += 1
 
         num_faces_per_frame.append(n_faces)
 
