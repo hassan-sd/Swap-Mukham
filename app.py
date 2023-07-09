@@ -19,7 +19,7 @@ from moviepy.editor import VideoFileClip
 from nsfw_detector import get_nsfw_detector
 from face_swapper import Inswapper, paste_to_whole, place_foreground_on_background
 from face_analyser import detect_conditions, get_analysed_data, swap_options_list
-from face_enhancer import load_face_enhancer_model, face_enhancer_list, gfpgan_enhance, realesrgan_enhance
+from face_enhancer import get_available_enhancer_names, load_face_enhancer_model
 from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
 from utils import trim_video, StreamerThread, ProcessBar, open_directory, split_list_by_lengths, merge_img_sequence_from_ref
 
@@ -68,6 +68,9 @@ FACE_ANALYSER = None
 FACE_ENHANCER = None
 FACE_PARSER = None
 NSFW_DETECTOR = None
+FACE_ENHANCER_LIST = ["NONE"]
+FACE_ENHANCER_LIST.extend(get_available_enhancer_names())
+
 
 ## ------------------------------ SET EXECUTION PROVIDER ------------------------------
 # Note: Non CUDA users may change settings here
@@ -251,11 +254,8 @@ def process(
         if face_enhancer_name != "NONE":
             yield f"### \n ⌛ Enhancing faces with {face_enhancer_name}...", *ui_before()
             for idx, pred in tqdm(enumerate(preds), total=len(preds), desc=f"{face_enhancer_name}"):
-                if face_enhancer_name == 'GFPGAN':
-                    pred = gfpgan_enhance(pred, FACE_ENHANCER)
-                elif face_enhancer_name.startswith("REAL-ESRGAN"):
-                    pred = realesrgan_enhance(pred, FACE_ENHANCER)
-
+                enhancer_model, enhancer_model_runner = FACE_ENHANCER
+                pred = enhancer_model_runner(pred, enhancer_model)
                 preds[idx] = cv2.resize(pred, (512,512))
                 aimgs[idx] = cv2.resize(aimgs[idx], (512,512))
                 matrs[idx] /= 0.25
@@ -637,7 +637,7 @@ with gr.Blocks(css=css) as interface:
                     )
 
                     face_enhancer_name = gr.Dropdown(
-                        face_enhancer_list, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
+                        FACE_ENHANCER_LIST, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
                     )
 
                 source_image_input = gr.Image(
