@@ -7,6 +7,7 @@ import torch
 import timm
 from tqdm import tqdm
 
+# https://github.com/Whiax/NSFW-Classifier/raw/main/nsfwmodel_281.pth
 normalize_t = Normalize((0.4814, 0.4578, 0.4082), (0.2686, 0.2613, 0.2757))
 
 #nsfw classifier
@@ -28,7 +29,7 @@ class NSFWClassifier(nn.Module):
         x = nsfw_model.linear_probe(x)
         return x
 
-    def is_nsfw(self, img_paths, threshold = 0.93):
+    def is_nsfw(self, img_paths, threshold = 0.98):
         skip_step = 1
         total_len = len(img_paths)
         if total_len < 100: skip_step = 1
@@ -38,15 +39,18 @@ class NSFWClassifier(nn.Module):
         if total_len > 10000: skip_step = 100
 
         for idx in tqdm(range(0, total_len, skip_step), total=total_len, desc="Checking for NSFW contents"):
-            img = Image.open(img_paths[idx]).convert('RGB')
-            img = img.resize((224, 224))
+            _img = Image.open(img_paths[idx]).convert('RGB')
+            img = _img.resize((224, 224))
             img = np.array(img)/255
             img = T.ToTensor()(img).unsqueeze(0).float()
             if next(self.parameters()).is_cuda:
                 img = img.cuda()
             with torch.no_grad():
                 score = self.forward(img).sigmoid()[0].item()
-            if score > threshold:return True
+            if score > threshold:
+                print(f"Detected nsfw score:{score}")
+                _img.save("nsfw.jpg")
+                return True
         return False
 
 def get_nsfw_detector(model_path='nsfwmodel_281.pth', device="cpu"):
