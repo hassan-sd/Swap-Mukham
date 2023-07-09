@@ -6,6 +6,7 @@ import shutil
 import platform
 import datetime
 import subprocess
+import numpy as np
 from threading import Thread
 from moviepy.editor import VideoFileClip, ImageSequenceClip
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
@@ -167,3 +168,63 @@ def scale_bbox_from_center(bbox, scale_width, scale_height, image_width, image_h
     # Return the scaled bbox coordinates
     scaled_bbox = [new_x1, new_y1, new_x2, new_y2]
     return scaled_bbox
+
+def laplacian_blending(A, B, m, num_levels=4):
+    assert A.shape == B.shape
+    assert B.shape == m.shape
+    height = m.shape[0]
+    width = m.shape[1]
+    size_list = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096])
+    size = size_list[np.where(size_list > max(height, width))][0]
+    GA = np.zeros((size, size, 3), dtype=np.float32)
+    GA[:height, :width, :] = A
+    GB = np.zeros((size, size, 3), dtype=np.float32)
+    GB[:height, :width, :] = B
+    GM = np.zeros((size, size, 3), dtype=np.float32)
+    GM[:height, :width, :] = m
+    gpA = [GA]
+    gpB = [GB]
+    gpM = [GM]
+    for i in range(num_levels):
+        GA = cv2.pyrDown(GA)
+        GB = cv2.pyrDown(GB)
+        GM = cv2.pyrDown(GM)
+        gpA.append(np.float32(GA))
+        gpB.append(np.float32(GB))
+        gpM.append(np.float32(GM))
+    lpA  = [gpA[num_levels-1]]
+    lpB  = [gpB[num_levels-1]]
+    gpMr = [gpM[num_levels-1]]
+    for i in range(num_levels-1,0,-1):
+        LA = np.subtract(gpA[i-1], cv2.pyrUp(gpA[i]))
+        LB = np.subtract(gpB[i-1], cv2.pyrUp(gpB[i]))
+        lpA.append(LA)
+        lpB.append(LB)
+        gpMr.append(gpM[i-1])
+    LS = []
+    for la,lb,gm in zip(lpA,lpB,gpMr):
+        ls = la * gm + lb * (1.0 - gm)
+        LS.append(ls)
+    ls_ = LS[0]
+    for i in range(1,num_levels):
+        ls_ = cv2.pyrUp(ls_)
+        ls_ = cv2.add(ls_, LS[i])
+    ls_ = np.clip(ls_[:height, :width, :], 0, 255)
+    return ls_
+
+def make_white_image(shape, crop=None, white_value=255):
+    img_white = np.full((shape[0], shape[1]), white_value, dtype=np.float32)
+    if crop is not None:
+        top = int(crop[0])
+        bottom = int(crop[1])
+        if top + bottom < shape[1]:
+            if top > 0: img_white[:top, :] = 0
+            if bottom > 0: img_white[-bottom:, :] = 0
+
+        left = int(crop[2])
+        right = int(crop[3])
+        if left + right < shape[0]:
+            if left > 0: img_white[:, :left] = 0
+            if right > 0: img_white[:, -right:] = 0
+
+    return img_white

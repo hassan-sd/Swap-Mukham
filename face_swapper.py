@@ -7,6 +7,8 @@ import numpy as np
 from tqdm import tqdm
 from onnx import numpy_helper
 from skimage import transform as trans
+import torchvision.transforms.functional as F
+from utils import make_white_image, laplacian_blending
 
 arcface_dst = np.array(
     [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
@@ -62,33 +64,44 @@ class Inswapper():
         self.input_size = tuple(input_shape[2:4][::-1])
 
     def forward(self, imgs, latents):
-        batch_preds = []
+        preds = []
         for img, latent in zip(imgs, latents):
             img = (img - self.input_mean) / self.input_std
             pred = self.session.run(self.output_names, {self.input_names[0]: img, self.input_names[1]: latent})[0]
-            batch_preds.append(pred)
-        return batch_preds
+            preds.append(pred)
 
     def get(self, imgs, target_faces, source_faces):
-        batch_preds = []
-        batch_aimgs = []
-        batch_ms = []
-        for img, target_face, source_face in zip(imgs, target_faces, source_faces):
-            if isinstance(img, str):
-                img = cv2.imread(img)
-            aimg, M = norm_crop2(img, target_face.kps, self.input_size[0])
-            blob = cv2.dnn.blobFromImage(aimg, 1.0 / self.input_std, self.input_size,
-                                         (self.input_mean, self.input_mean, self.input_mean), swapRB=True)
-            latent = source_face.normed_embedding.reshape((1, -1))
-            latent = np.dot(latent, self.emap)
-            latent /= np.linalg.norm(latent)
+        imgs = list(imgs)
+
+        preds = [None] * len(imgs)
+        aimgs = [None] * len(imgs)
+        matrs = [None] * len(imgs)
+
+        for idx, (img, target_face, source_face) in enumerate(zip(imgs, target_faces, source_faces)):
+            aimg, M, blob, latent = self.prepare_data(img, target_face, source_face)
+            aimgs[idx] = aimg
+            matrs[idx] = M
             pred = self.session.run(self.output_names, {self.input_names[0]: blob, self.input_names[1]: latent})[0]
             pred = pred.transpose((0, 2, 3, 1))[0]
             pred = np.clip(255 * pred, 0, 255).astype(np.uint8)[:, :, ::-1]
-            batch_preds.append(pred)
-            batch_aimgs.append(aimg)
-            batch_ms.append(M)
-        return batch_preds, batch_aimgs, batch_ms
+            preds[idx] = pred
+
+        return (preds, aimgs, matrs)
+
+    def prepare_data(self, img, target_face, source_face):
+        if isinstance(img, str):
+            img = cv2.imread(img)
+
+        aimg, M = norm_crop2(img, target_face.kps, self.input_size[0])
+
+        blob = cv2.dnn.blobFromImage(aimg, 1.0 / self.input_std, self.input_size,
+                (self.input_mean, self.input_mean, self.input_mean), swapRB=True)
+
+        latent = source_face.normed_embedding.reshape((1, -1))
+        latent = np.dot(latent, self.emap)
+        latent /= np.linalg.norm(latent)
+
+        return (aimg, M, blob, latent)
 
     def batch_forward(self, img_list, target_f_list, source_f_list):
         num_samples = len(img_list)
@@ -96,8 +109,9 @@ class Inswapper():
 
         preds = []
         aimgs = []
-        ms = []
-        for i in tqdm(range(num_batches), desc="Swapping face by batch"):
+        matrs = []
+
+        for i in tqdm(range(num_batches), desc="Swapping face"):
             start_idx = i * self.batch_size
             end_idx = min((i + 1) * self.batch_size, num_samples)
 
@@ -105,86 +119,26 @@ class Inswapper():
             batch_target_f = target_f_list[start_idx:end_idx]
             batch_source_f = source_f_list[start_idx:end_idx]
 
-            batch_pred, batch_aimg, batch_m = self.get(batch_img, batch_target_f, batch_source_f)
+            batch_pred, batch_aimg, batch_matr = self.get(batch_img, batch_target_f, batch_source_f)
             preds.extend(batch_pred)
             aimgs.extend(batch_aimg)
-            ms.extend(batch_m)
-        return preds, aimgs, ms
+            matrs.extend(batch_matr)
 
-
-def laplacian_blending(A, B, m, num_levels=4):
-    assert A.shape == B.shape
-    assert B.shape == m.shape
-    height = m.shape[0]
-    width = m.shape[1]
-    size_list = np.array([4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096])
-    size = size_list[np.where(size_list > max(height, width))][0]
-    GA = np.zeros((size, size, 3), dtype=np.float32)
-    GA[:height, :width, :] = A
-    GB = np.zeros((size, size, 3), dtype=np.float32)
-    GB[:height, :width, :] = B
-    GM = np.zeros((size, size, 3), dtype=np.float32)
-    GM[:height, :width, :] = m
-    gpA = [GA]
-    gpB = [GB]
-    gpM = [GM]
-    for i in range(num_levels):
-        GA = cv2.pyrDown(GA)
-        GB = cv2.pyrDown(GB)
-        GM = cv2.pyrDown(GM)
-        gpA.append(np.float32(GA))
-        gpB.append(np.float32(GB))
-        gpM.append(np.float32(GM))
-    lpA  = [gpA[num_levels-1]]
-    lpB  = [gpB[num_levels-1]]
-    gpMr = [gpM[num_levels-1]]
-    for i in range(num_levels-1,0,-1):
-        LA = np.subtract(gpA[i-1], cv2.pyrUp(gpA[i]))
-        LB = np.subtract(gpB[i-1], cv2.pyrUp(gpB[i]))
-        lpA.append(LA)
-        lpB.append(LB)
-        gpMr.append(gpM[i-1])
-    LS = []
-    for la,lb,gm in zip(lpA,lpB,gpMr):
-        ls = la * gm + lb * (1.0 - gm)
-        LS.append(ls)
-    ls_ = LS[0]
-    for i in range(1,num_levels):
-        ls_ = cv2.pyrUp(ls_)
-        ls_ = cv2.add(ls_, LS[i])
-    ls_ = np.clip(ls_[:height, :width, :], 0, 255)
-    return ls_
+        return (preds, aimgs, matrs)
 
 
 def paste_to_whole(bgr_fake, aimg, M, whole_img, laplacian_blend=True, crop_mask=(0,0,0,0)):
     IM = cv2.invertAffineTransform(M)
 
-    img_white = np.full((aimg.shape[0], aimg.shape[1]), 255, dtype=np.float32)
+    img_white = make_white_image(aimg.shape[:2], crop=crop_mask, white_value=255)
 
-    top = int(crop_mask[0])
-    bottom = int(crop_mask[1])
-    if top + bottom < aimg.shape[1]:
-        if top > 0: img_white[:top, :] = 0
-        if bottom > 0: img_white[-bottom:, :] = 0
+    bgr_fake = cv2.warpAffine(bgr_fake, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0)
+    img_white = cv2.warpAffine(img_white, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0)
 
-    left = int(crop_mask[2])
-    right = int(crop_mask[3])
-    if left + right < aimg.shape[0]:
-        if left > 0: img_white[:, :left] = 0
-        if right > 0: img_white[:, -right:] = 0
-
-    bgr_fake = cv2.warpAffine(
-        bgr_fake, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
-    )
-    img_white = cv2.warpAffine(
-        img_white, IM, (whole_img.shape[1], whole_img.shape[0]), borderValue=0.0
-    )
     img_white[img_white > 20] = 255
     img_mask = img_white
     mask_h_inds, mask_w_inds = np.where(img_mask == 255)
-    mask_h = np.max(mask_h_inds) - np.min(mask_h_inds)
-    mask_w = np.max(mask_w_inds) - np.min(mask_w_inds)
-    mask_size = int(np.sqrt(mask_h * mask_w))
+    mask_size = int(np.sqrt(np.ptp(mask_h_inds) * np.ptp(mask_w_inds)))
 
     k = max(mask_size // 10, 10)
     img_mask = cv2.erode(img_mask, np.ones((k, k), np.uint8), iterations=1)
@@ -201,3 +155,11 @@ def paste_to_whole(bgr_fake, aimg, M, whole_img, laplacian_blend=True, crop_mask
 
     fake_merged = img_mask * bgr_fake + (1 - img_mask) * whole_img.astype(np.float32)
     return fake_merged.astype("uint8")
+
+def place_foreground_on_background(foreground, background, matrix):
+    matrix = cv2.invertAffineTransform(matrix)
+    mask = np.ones(foreground.shape, dtype="float32")
+    foreground = cv2.warpAffine(foreground, matrix, (background.shape[1], background.shape[0]), borderValue=0.0)
+    mask = cv2.warpAffine(mask, matrix, (background.shape[1], background.shape[0]), borderValue=0.0)
+    composite_image = mask * foreground + (1 - mask) * background
+    return composite_image

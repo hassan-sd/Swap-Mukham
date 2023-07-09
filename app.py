@@ -13,15 +13,15 @@ import onnxruntime
 import numpy as np
 import gradio as gr
 from tqdm import tqdm
+import concurrent.futures
 from moviepy.editor import VideoFileClip
 
 from nsfw_detector import get_nsfw_detector
-from face_swapper import Inswapper, paste_to_whole
+from face_swapper import Inswapper, paste_to_whole, place_foreground_on_background
 from face_analyser import detect_conditions, get_analysed_data, swap_options_list
 from face_enhancer import load_face_enhancer_model, face_enhancer_list, gfpgan_enhance, realesrgan_enhance
 from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
 from utils import trim_video, StreamerThread, ProcessBar, open_directory, split_list_by_lengths, merge_img_sequence_from_ref
-
 
 ## ------------------------------ USER ARGS ------------------------------
 
@@ -70,7 +70,7 @@ FACE_PARSER = None
 NSFW_DETECTOR = None
 
 ## ------------------------------ SET EXECUTION PROVIDER ------------------------------
-# Note: For AMD,MAC or non CUDA users, change settings here
+# Note: Non CUDA users may change settings here
 
 PROVIDER = ["CPUExecutionProvider"]
 
@@ -87,7 +87,7 @@ else:
     print("\n********** Running on CPU **********\n")
 
 device = "cuda" if USE_CUDA else "cpu"
-
+EMPTY_CACHE = lambda: torch.cuda.empty_cache() if device == "cuda" else None
 
 ## ------------------------------ LOAD MODELS ------------------------------
 
@@ -222,7 +222,7 @@ def process(
             yield f"### \n 🔞 {message}", *ui_before()
             assert not nsfw, message
             return False
-        if device == "cuda": torch.cuda.empty_cache()
+        EMPTY_CACHE()
 
         yield "### \n ⌛ Analysing face data...", *ui_before()
         if condition != "Specific Face":
@@ -240,13 +240,13 @@ def process(
 
         yield "### \n ⌛ Swapping faces...", *ui_before()
         preds, aimgs, matrs = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
-        torch.cuda.empty_cache()
+        EMPTY_CACHE()
 
         if enable_face_parser:
             yield "### \n ⌛ Applying face-parsing mask...", *ui_before()
             for idx, (pred, aimg) in tqdm(enumerate(zip(preds, aimgs)), total=len(preds), desc="Face parsing"):
                 preds[idx] = swap_regions(pred, aimg, FACE_PARSER, smooth_mask, includes=includes, blur=int(blur_amount))
-            torch.cuda.empty_cache()
+        EMPTY_CACHE()
 
         if face_enhancer_name != "NONE":
             yield f"### \n ⌛ Enhancing faces with {face_enhancer_name}...", *ui_before()
@@ -259,19 +259,61 @@ def process(
                 preds[idx] = cv2.resize(pred, (512,512))
                 aimgs[idx] = cv2.resize(aimgs[idx], (512,512))
                 matrs[idx] /= 0.25
-        torch.cuda.empty_cache()
+
+        EMPTY_CACHE()
 
         split_preds = split_list_by_lengths(preds, num_faces_per_frame)
+        del preds
         split_aimgs = split_list_by_lengths(aimgs, num_faces_per_frame)
+        del aimgs
         split_matrs = split_list_by_lengths(matrs, num_faces_per_frame)
+        del matrs
 
         yield "### \n ⌛ Post-processing...", *ui_before()
-        for idx, frame_img in tqdm(enumerate(image_sequence), total=len(image_sequence), desc="Post-Processing"):
+        def post_process(frame_idx, frame_img, split_preds, split_aimgs, split_matrs, enable_laplacian_blend, crop_top, crop_bott, crop_left, crop_right):
             whole_img_path = frame_img
             whole_img = cv2.imread(whole_img_path)
-            for p, a, m in zip(split_preds[idx], split_aimgs[idx], split_matrs[idx]):
-                whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top,crop_bott,crop_left,crop_right))
+            for p, a, m in zip(split_preds[frame_idx], split_aimgs[frame_idx], split_matrs[frame_idx]):
+                whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top, crop_bott, crop_left, crop_right))
             cv2.imwrite(whole_img_path, whole_img)
+
+        def concurrent_post_process(image_sequence, split_preds, split_aimgs, split_matrs, enable_laplacian_blend, crop_top, crop_bott, crop_left, crop_right):
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = []
+                for idx, frame_img in enumerate(image_sequence):
+                    future = executor.submit(
+                        post_process,
+                        idx,
+                        frame_img,
+                        split_preds,
+                        split_aimgs,
+                        split_matrs,
+                        enable_laplacian_blend,
+                        crop_top,
+                        crop_bott,
+                        crop_left,
+                        crop_right
+                    )
+                    futures.append(future)
+
+                for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Post-Processing"):
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        print(f"An error occurred: {e}")
+
+        concurrent_post_process(
+            image_sequence,
+            split_preds,
+            split_aimgs,
+            split_matrs,
+            enable_laplacian_blend,
+            crop_top,
+            crop_bott,
+            crop_left,
+            crop_right
+        )
+
 
 
     ## ------------------------------ IMAGE ------------------------------
