@@ -37,7 +37,7 @@ def load_face_enhancer_model(name='GFPGAN', device="cpu"):
     model_path, model_runner = supported_enhancers.get(name)
     model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), model_path)
     if name == 'GFPGAN':
-        model = gfpgan.GFPGANer(model_path=model_path, upscale=1)
+        model = gfpgan.GFPGANer(model_path=model_path, upscale=1, device=device)
     elif name == 'REAL-ESRGAN 2x':
         model = RealESRGAN(device, scale=2)
         model.load_weights(model_path, download=False)

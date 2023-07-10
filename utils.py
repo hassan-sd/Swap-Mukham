@@ -12,6 +12,54 @@ from moviepy.editor import VideoFileClip, ImageSequenceClip
 from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
 
 
+logo_image = cv2.imread("./assets/images/logo.png", cv2.IMREAD_UNCHANGED)
+
+
+quality_types = ["poor", "low", "medium", "high", "best"]
+
+
+bitrate_quality_by_resolution = {
+    240: {"poor": "300k", "low": "500k", "medium": "800k", "high": "1000k", "best": "1200k"},
+    360: {"poor": "500k","low": "800k","medium": "1200k","high": "1500k","best": "2000k"},
+    480: {"poor": "800k","low": "1200k","medium": "2000k","high": "2500k","best": "3000k"},
+    720: {"poor": "1500k","low": "2500k","medium": "4000k","high": "5000k","best": "6000k"},
+    1080: {"poor": "2500k","low": "4000k","medium": "6000k","high": "7000k","best": "8000k"},
+    1440: {"poor": "4000k","low": "6000k","medium": "8000k","high": "10000k","best": "12000k"},
+    2160: {"poor": "8000k","low": "10000k","medium": "12000k","high": "15000k","best": "20000k"}
+}
+
+
+crf_quality_by_resolution = {
+    240: {"poor": 45, "low": 35, "medium": 28, "high": 23, "best": 20},
+    360: {"poor": 35, "low": 28, "medium": 23, "high": 20, "best": 18},
+    480: {"poor": 28, "low": 23, "medium": 20, "high": 18, "best": 16},
+    720: {"poor": 23, "low": 20, "medium": 18, "high": 16, "best": 14},
+    1080: {"poor": 20, "low": 18, "medium": 16, "high": 14, "best": 12},
+    1440: {"poor": 18, "low": 16, "medium": 14, "high": 12, "best": 10},
+    2160: {"poor": 16, "low": 14, "medium": 12, "high": 10, "best": 8}
+}
+
+
+def get_bitrate_for_resolution(resolution, quality):
+    available_resolutions = list(bitrate_quality_by_resolution.keys())
+    closest_resolution = min(available_resolutions, key=lambda x: abs(x - resolution))
+    return bitrate_quality_by_resolution[closest_resolution][quality]
+
+
+def get_crf_for_resolution(resolution, quality):
+    available_resolutions = list(crf_quality_by_resolution.keys())
+    closest_resolution = min(available_resolutions, key=lambda x: abs(x - resolution))
+    return crf_quality_by_resolution[closest_resolution][quality]
+
+
+def get_video_bitrate(video_file):
+    ffprobe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+        'stream=bit_rate', '-of', 'default=noprint_wrappers=1:nokey=1', video_file]
+    result = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE)
+    kbps = max(int(result.stdout) // 1000, 10)
+    return str(kbps) + 'k'
+
+
 def trim_video(video_path, output_path, start_frame, stop_frame):
     video_name, _ = os.path.splitext(os.path.basename(video_path))
     trimmed_video_filename = video_name + "_trimmed" + ".mp4"
@@ -24,9 +72,11 @@ def trim_video(video_path, output_path, start_frame, stop_frame):
     start_time = start_frame / fps
     duration = (stop_frame - start_frame) / fps
 
+    bitrate = get_bitrate_for_resolution(min(*video.size), "high")
+
     trimmed_video = video.subclip(start_time, start_time + duration)
     trimmed_video.write_videofile(
-        trimmed_video_file_path, codec="libx264", audio_codec="aac"
+        trimmed_video_file_path, codec="libx264", audio_codec="aac", bitrate=bitrate,
     )
     trimmed_video.close()
     video.close()
@@ -92,9 +142,6 @@ class ProcessBar:
         return info_text
 
 
-logo_image = cv2.imread("./assets/images/logo.png", cv2.IMREAD_UNCHANGED)
-
-
 def add_logo_to_image(img, logo=logo_image):
     logo_size = int(img.shape[1] * 0.1)
     logo = cv2.resize(logo, (logo_size, logo_size))
@@ -112,6 +159,7 @@ def add_logo_to_image(img, logo=logo_image):
         ]
     return img
 
+
 def split_list_by_lengths(data, length_list):
     split_data = []
     start_idx = 0
@@ -121,6 +169,7 @@ def split_list_by_lengths(data, length_list):
         split_data.append(sublist)
         start_idx = end_idx
     return split_data
+
 
 def merge_img_sequence_from_ref(ref_video_path, image_sequence, output_file_name):
     video_clip = VideoFileClip(ref_video_path)
@@ -133,11 +182,14 @@ def merge_img_sequence_from_ref(ref_video_path, image_sequence, output_file_name
     if audio_clip is not None:
         edited_video_clip = edited_video_clip.set_audio(audio_clip)
 
+    bitrate = get_bitrate_for_resolution(min(*edited_video_clip.size), "high")
+
     edited_video_clip.set_duration(duration).write_videofile(
-        output_file_name, codec="libx264"
+        output_file_name, codec="libx264", bitrate=bitrate,
     )
     edited_video_clip.close()
     video_clip.close()
+
 
 def scale_bbox_from_center(bbox, scale_width, scale_height, image_width, image_height):
     # Extract the coordinates of the bbox
@@ -168,6 +220,7 @@ def scale_bbox_from_center(bbox, scale_width, scale_height, image_width, image_h
     # Return the scaled bbox coordinates
     scaled_bbox = [new_x1, new_y1, new_x2, new_y2]
     return scaled_bbox
+
 
 def laplacian_blending(A, B, m, num_levels=4):
     assert A.shape == B.shape
@@ -211,6 +264,7 @@ def laplacian_blending(A, B, m, num_levels=4):
         ls_ = cv2.add(ls_, LS[i])
     ls_ = np.clip(ls_[:height, :width, :], 0, 255)
     return ls_
+
 
 def make_white_image(shape, crop=None, white_value=255):
     img_white = np.full((shape[0], shape[1]), white_value, dtype=np.float32)
