@@ -38,7 +38,7 @@ class NSFWClassifier(nn.Module):
         if total_len > 1000 and total_len < 10000: skip_step = 50
         if total_len > 10000: skip_step = 100
 
-        for idx in tqdm(range(0, total_len, skip_step), total=total_len, desc="Checking for NSFW contents"):
+        for idx in tqdm(range(0, total_len, skip_step), total=int(total_len // skip_step), desc="Checking for NSFW contents"):
             _img = Image.open(img_paths[idx]).convert('RGB')
             img = _img.resize((224, 224))
             img = np.array(img)/255

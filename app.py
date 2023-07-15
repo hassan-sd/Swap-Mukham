@@ -743,13 +743,23 @@ with gr.Blocks(css=css) as interface:
                         "🎬", interactive=False, visible=not USE_COLAB
                     )
 
-                with gr.Column():
-                    gr.Markdown(
-                        '[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/harisreedhar)'
-                    )
-                    gr.Markdown(
-                        "### [Source code](https://github.com/harisreedhar/Swap-Mukham) . [Disclaimer](https://github.com/harisreedhar/Swap-Mukham#disclaimer) . [Gradio](https://gradio.app/)"
-                    )
+                with gr.Box():
+                    with gr.Row():
+                        gr.Markdown(
+                            "### [🤝 Sponsor](https://github.com/sponsors/harisreedhar)"
+                        )
+                        gr.Markdown(
+                            "### [👨‍💻 Source code](https://github.com/harisreedhar/Swap-Mukham)"
+                        )
+                        gr.Markdown(
+                            "### [⚠️ Disclaimer](https://github.com/harisreedhar/Swap-Mukham#disclaimer)"
+                        )
+                        gr.Markdown(
+                            "### [🌐 Run in Colab](https://colab.research.google.com/github/harisreedhar/Swap-Mukham/blob/main/swap_mukham_colab.ipynb)"
+                        )
+                        gr.Markdown(
+                            "### [🤗 Acknowledgements](https://github.com/harisreedhar/Swap-Mukham#acknowledgements)"
+                        )
 
     ## ------------------------------ GRADIO EVENTS ------------------------------
 
