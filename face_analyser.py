@@ -192,4 +192,3 @@ def get_analysed_data(face_analyser, image_sequence, source_data, swap_condition
         num_faces_per_frame.append(n_faces)
 
     return analysed_target_list, analysed_source_list, whole_frame_eql_list, num_faces_per_frame
-
