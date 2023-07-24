@@ -12,16 +12,18 @@ import insightface
 import onnxruntime
 import numpy as np
 import gradio as gr
+import threading
+import queue
 from tqdm import tqdm
 import concurrent.futures
 from moviepy.editor import VideoFileClip
 
 from nsfw_detector import get_nsfw_detector
-from face_swapper import Inswapper, paste_to_whole, place_foreground_on_background
+from face_swapper import Inswapper, paste_to_whole
 from face_analyser import detect_conditions, get_analysed_data, swap_options_list
-from face_enhancer import get_available_enhancer_names, load_face_enhancer_model
-from face_parsing import init_parser, swap_regions, mask_regions, mask_regions_to_list, SoftErosion
-from utils import trim_video, StreamerThread, ProcessBar, open_directory, split_list_by_lengths, merge_img_sequence_from_ref
+from face_parsing import init_parsing_model, get_parsed_mask, mask_regions, mask_regions_to_list
+from face_enhancer import get_available_enhancer_names, load_face_enhancer_model, cv2_interpolations
+from utils import trim_video, StreamerThread, ProcessBar, open_directory, split_list_by_lengths, merge_img_sequence_from_ref, create_image_grid
 
 ## ------------------------------ USER ARGS ------------------------------
 
@@ -39,7 +41,7 @@ user_args = parser.parse_args()
 USE_COLAB = user_args.colab
 USE_CUDA = user_args.cuda
 DEF_OUTPUT_PATH = user_args.out_dir
-BATCH_SIZE = user_args.batch_size
+BATCH_SIZE = int(user_args.batch_size)
 WORKSPACE = None
 OUTPUT_FILE = None
 CURRENT_FRAME = None
@@ -60,8 +62,9 @@ MASK_INCLUDE = [
     "U-Lip"
 ]
 MASK_SOFT_KERNEL = 17
-MASK_SOFT_ITERATIONS = 7
-MASK_BLUR_AMOUNT = 20
+MASK_SOFT_ITERATIONS = 10
+MASK_BLUR_AMOUNT = 0.1
+MASK_ERODE_AMOUNT = 0.15
 
 FACE_SWAPPER = None
 FACE_ANALYSER = None
@@ -70,7 +73,7 @@ FACE_PARSER = None
 NSFW_DETECTOR = None
 FACE_ENHANCER_LIST = ["NONE"]
 FACE_ENHANCER_LIST.extend(get_available_enhancer_names())
-
+FACE_ENHANCER_LIST.extend(cv2_interpolations)
 
 ## ------------------------------ SET EXECUTION PROVIDER ------------------------------
 # Note: Non CUDA users may change settings here
@@ -113,7 +116,7 @@ def load_face_swapper_model(path="./assets/pretrained_models/inswapper_128.onnx"
 def load_face_parser_model(path="./assets/pretrained_models/79999_iter.pth"):
     global FACE_PARSER
     if FACE_PARSER is None:
-        FACE_PARSER = init_parser(path, mode=device)
+        FACE_PARSER = init_parsing_model(path, device=device)
 
 def load_nsfw_detector_model(path="./assets/pretrained_models/nsfwmodel_281.pth"):
     global NSFW_DETECTOR
@@ -145,6 +148,7 @@ def process(
     mask_soft_kernel,
     mask_soft_iterations,
     blur_amount,
+    erode_amount,
     face_scale,
     enable_laplacian_blend,
     crop_top,
@@ -189,6 +193,7 @@ def process(
     get_finsh_text = lambda start_time: f"✔️ Completed in {int(total_exec_time(start_time)[0])} min {int(total_exec_time(start_time)[1])} sec."
 
     ## ------------------------------ PREPARE INPUTS & LOAD MODELS ------------------------------
+
     yield "### \n ⌛ Loading NSFW detector model...", *ui_before()
     load_nsfw_detector_model()
 
@@ -199,7 +204,8 @@ def process(
     load_face_swapper_model()
 
     if face_enhancer_name != "NONE":
-        yield f"### \n ⌛ Loading {face_enhancer_name} model...", *ui_before()
+        if face_enhancer_name not in cv2_interpolations:
+            yield f"### \n ⌛ Loading {face_enhancer_name} model...", *ui_before()
         FACE_ENHANCER = load_face_enhancer_model(name=face_enhancer_name, device=device)
     else:
         FACE_ENHANCER = None
@@ -209,15 +215,19 @@ def process(
         load_face_parser_model()
 
     includes = mask_regions_to_list(mask_includes)
-    smooth_mask = SoftErosion(kernel_size=17, threshold=0.9, iterations=int(mask_soft_iterations)).to(device) if mask_soft_iterations > 0 else None
     specifics = list(specifics)
     half = len(specifics) // 2
     sources = specifics[:half]
     specifics = specifics[half:]
-
-    ## ------------------------------ ANALYSE & SWAP FUNC ------------------------------
+    if crop_top > crop_bott:
+        crop_top, crop_bott = crop_bott, crop_top
+    if crop_left > crop_right:
+        crop_left, crop_right = crop_right, crop_left
+    crop_mask = (crop_top, 511-crop_bott, crop_left, 511-crop_right)
 
     def swap_process(image_sequence):
+        ## ------------------------------ CONTENT CHECK ------------------------------
+
         yield "### \n ⌛ Checking contents...", *ui_before()
         nsfw = NSFW_DETECTOR.is_nsfw(image_sequence)
         if nsfw:
@@ -226,6 +236,8 @@ def process(
             assert not nsfw, message
             return False
         EMPTY_CACHE()
+
+        ## ------------------------------ ANALYSE FACE ------------------------------
 
         yield "### \n ⌛ Analysing face data...", *ui_before()
         if condition != "Specific Face":
@@ -241,79 +253,97 @@ def process(
             scale=face_scale
         )
 
-        yield "### \n ⌛ Swapping faces...", *ui_before()
-        preds, aimgs, matrs = FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources)
-        EMPTY_CACHE()
+        ## ------------------------------ SWAP FUNC ------------------------------
 
-        if enable_face_parser:
-            yield "### \n ⌛ Applying face-parsing mask...", *ui_before()
-            for idx, (pred, aimg) in tqdm(enumerate(zip(preds, aimgs)), total=len(preds), desc="Face parsing"):
-                preds[idx] = swap_regions(pred, aimg, FACE_PARSER, smooth_mask, includes=includes, blur=int(blur_amount))
-        EMPTY_CACHE()
+        yield "### \n ⌛ Generating faces...", *ui_before()
+        preds = []
+        matrs = []
+        count = 0
+        global PREVIEW
+        for batch_pred, batch_matr in FACE_SWAPPER.batch_forward(whole_frame_list, analysed_targets, analysed_sources):
+            preds.extend(batch_pred)
+            matrs.extend(batch_matr)
+            EMPTY_CACHE()
+            count += 1
 
+            if USE_CUDA:
+                image_grid = create_image_grid(batch_pred, size=128)
+                PREVIEW = image_grid[:, :, ::-1]
+                yield f"### \n ⌛ Generating face Batch {count}", *ui_before()
+
+        ## ------------------------------ FACE ENHANCEMENT ------------------------------
+
+        generated_len = len(preds)
         if face_enhancer_name != "NONE":
-            yield f"### \n ⌛ Enhancing faces with {face_enhancer_name}...", *ui_before()
-            for idx, pred in tqdm(enumerate(preds), total=len(preds), desc=f"{face_enhancer_name}"):
+            yield f"### \n ⌛ Upscaling faces with {face_enhancer_name}...", *ui_before()
+            for idx, pred in tqdm(enumerate(preds), total=generated_len, desc=f"Upscaling with {face_enhancer_name}"):
                 enhancer_model, enhancer_model_runner = FACE_ENHANCER
                 pred = enhancer_model_runner(pred, enhancer_model)
                 preds[idx] = cv2.resize(pred, (512,512))
-                aimgs[idx] = cv2.resize(aimgs[idx], (512,512))
-                matrs[idx] /= 0.25
-
         EMPTY_CACHE()
+
+        ## ------------------------------ FACE PARSING ------------------------------
+
+        if enable_face_parser:
+            yield "### \n ⌛ Face-parsing mask...", *ui_before()
+            masks = []
+            count = 0
+            for batch_mask in get_parsed_mask(FACE_PARSER, preds, classes=includes, device=device, batch_size=BATCH_SIZE, softness=int(mask_soft_iterations)):
+                masks.append(batch_mask)
+                EMPTY_CACHE()
+                count += 1
+
+                if len(batch_mask) > 1:
+                    image_grid = create_image_grid(batch_mask, size=128)
+                    PREVIEW = image_grid[:, :, ::-1]
+                    yield f"### \n ⌛ Face parsing Batch {count}", *ui_before()
+            masks = np.concatenate(masks, axis=0) if len(masks) >= 1 else masks
+        else:
+            masks = [None] * generated_len
+
+        ## ------------------------------ SPLIT LIST ------------------------------
 
         split_preds = split_list_by_lengths(preds, num_faces_per_frame)
         del preds
-        split_aimgs = split_list_by_lengths(aimgs, num_faces_per_frame)
-        del aimgs
         split_matrs = split_list_by_lengths(matrs, num_faces_per_frame)
         del matrs
+        split_masks = split_list_by_lengths(masks, num_faces_per_frame)
+        del masks
 
-        yield "### \n ⌛ Post-processing...", *ui_before()
-        def post_process(frame_idx, frame_img, split_preds, split_aimgs, split_matrs, enable_laplacian_blend, crop_top, crop_bott, crop_left, crop_right):
+        ## ------------------------------ PASTE-BACK ------------------------------
+
+        yield "### \n ⌛ Pasting back...", *ui_before()
+        def post_process(frame_idx, frame_img, split_preds, split_matrs, split_masks, enable_laplacian_blend, crop_mask, blur_amount, erode_amount):
             whole_img_path = frame_img
             whole_img = cv2.imread(whole_img_path)
-            for p, a, m in zip(split_preds[frame_idx], split_aimgs[frame_idx], split_matrs[frame_idx]):
-                whole_img = paste_to_whole(p, a, m, whole_img, laplacian_blend=enable_laplacian_blend, crop_mask=(crop_top, crop_bott, crop_left, crop_right))
+            blend_method = 'laplacian' if enable_laplacian_blend else 'linear'
+            for p, m, mask in zip(split_preds[frame_idx], split_matrs[frame_idx], split_masks[frame_idx]):
+                p = cv2.resize(p, (512,512))
+                mask = cv2.resize(mask, (512,512)) if mask is not None else None
+                m /= 0.25
+                whole_img = paste_to_whole(p, whole_img, m, mask=mask, crop_mask=crop_mask, blend_method=blend_method, blur_amount=blur_amount, erode_amount=erode_amount)
             cv2.imwrite(whole_img_path, whole_img)
 
-        def concurrent_post_process(image_sequence, split_preds, split_aimgs, split_matrs, enable_laplacian_blend, crop_top, crop_bott, crop_left, crop_right):
+        def concurrent_post_process(image_sequence, *args):
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 futures = []
                 for idx, frame_img in enumerate(image_sequence):
-                    future = executor.submit(
-                        post_process,
-                        idx,
-                        frame_img,
-                        split_preds,
-                        split_aimgs,
-                        split_matrs,
-                        enable_laplacian_blend,
-                        crop_top,
-                        crop_bott,
-                        crop_left,
-                        crop_right
-                    )
+                    future = executor.submit(post_process, idx, frame_img, *args)
                     futures.append(future)
 
-                for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Post-Processing"):
-                    try:
-                        result = future.result()
-                    except Exception as e:
-                        print(f"An error occurred: {e}")
+                for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Pasting back"):
+                    result = future.result()
 
         concurrent_post_process(
             image_sequence,
             split_preds,
-            split_aimgs,
             split_matrs,
+            split_masks,
             enable_laplacian_blend,
-            crop_top,
-            crop_bott,
-            crop_left,
-            crop_right
+            crop_mask,
+            blur_amount,
+            erode_amount
         )
-
 
 
     ## ------------------------------ IMAGE ------------------------------
@@ -581,6 +611,18 @@ with gr.Blocks(css=css) as interface:
                     )
 
                 with gr.Tab("🪄 Other Settings"):
+                    face_scale = gr.Slider(
+                        label="Face Scale",
+                        minimum=0,
+                        maximum=2,
+                        value=1,
+                        interactive=True,
+                    )
+
+                    face_enhancer_name = gr.Dropdown(
+                        FACE_ENHANCER_LIST, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
+                    )
+
                     with gr.Accordion("Advanced Mask", open=False):
                         enable_face_parser_mask = gr.Checkbox(
                             label="Enable Face Parsing",
@@ -609,26 +651,32 @@ with gr.Blocks(css=css) as interface:
                             interactive=True,
 
                         )
-                        blur_amount = gr.Number(
-                            label="Mask Blur",
-                            value=MASK_BLUR_AMOUNT,
+
+
+                    with gr.Accordion("Crop Mask", open=False):
+                        crop_top = gr.Slider(label="Top", minimum=0, maximum=511, value=0, step=1, interactive=True)
+                        crop_bott = gr.Slider(label="Bottom", minimum=0, maximum=511, value=511, step=1, interactive=True)
+                        crop_left = gr.Slider(label="Left", minimum=0, maximum=511, value=0, step=1, interactive=True)
+                        crop_right = gr.Slider(label="Right", minimum=0, maximum=511, value=511, step=1, interactive=True)
+
+
+                    erode_amount = gr.Slider(
+                            label="Mask Erode",
                             minimum=0,
+                            maximum=1,
+                            value=MASK_ERODE_AMOUNT,
+                            step=0.05,
                             interactive=True,
                         )
 
-                    face_scale = gr.Slider(
-                        label="Face Scale",
-                        minimum=0,
-                        maximum=2,
-                        value=1,
-                        interactive=True,
-                    )
-
-                    with gr.Accordion("Crop Mask", open=False):
-                        crop_top = gr.Number(label="Top", value=0, minimum=0, interactive=True)
-                        crop_bott = gr.Number(label="Bottom", value=0, minimum=0, interactive=True)
-                        crop_left = gr.Number(label="Left", value=0, minimum=0, interactive=True)
-                        crop_right = gr.Number(label="Right", value=0, minimum=0, interactive=True)
+                    blur_amount = gr.Slider(
+                            label="Mask Blur",
+                            minimum=0,
+                            maximum=1,
+                            value=MASK_BLUR_AMOUNT,
+                            step=0.05,
+                            interactive=True,
+                        )
 
                     enable_laplacian_blend = gr.Checkbox(
                         label="Laplacian Blending",
@@ -636,9 +684,6 @@ with gr.Blocks(css=css) as interface:
                         interactive=True,
                     )
 
-                    face_enhancer_name = gr.Dropdown(
-                        FACE_ENHANCER_LIST, label="Face Enhancer", value="NONE", multiselect=False, interactive=True
-                    )
 
                 source_image_input = gr.Image(
                     label="Source face", type="filepath", interactive=True
@@ -830,6 +875,7 @@ with gr.Blocks(css=css) as interface:
         mask_soft_kernel,
         mask_soft_iterations,
         blur_amount,
+        erode_amount,
         face_scale,
         enable_laplacian_blend,
         crop_top,
