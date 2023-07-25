@@ -67,7 +67,7 @@ def trim_video(video_path, output_path, start_frame, stop_frame):
     os.makedirs(temp_path, exist_ok=True)
     trimmed_video_file_path = os.path.join(temp_path, trimmed_video_filename)
 
-    video = VideoFileClip(video_path)
+    video = VideoFileClip(video_path, fps_source="fps")
     fps = video.fps
     start_time = start_frame / fps
     duration = (stop_frame - start_frame) / fps
@@ -172,7 +172,7 @@ def split_list_by_lengths(data, length_list):
 
 
 def merge_img_sequence_from_ref(ref_video_path, image_sequence, output_file_name):
-    video_clip = VideoFileClip(ref_video_path)
+    video_clip = VideoFileClip(ref_video_path, fps_source="fps")
     fps = video_clip.fps
     duration = video_clip.duration
     total_frames = video_clip.reader.nframes
