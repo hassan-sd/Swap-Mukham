@@ -4,7 +4,7 @@ import torch
 import gfpgan
 from PIL import Image
 from upscaler.RealESRGAN import RealESRGAN
-
+from upscaler.codeformer import CodeFormerEnhancer
 
 def gfpgan_runner(img, model):
     _, imgs, _ = model.enhance(img, paste_back=True, has_aligned=True)
@@ -16,7 +16,13 @@ def realesrgan_runner(img, model):
     return img
 
 
+def codeformer_runner(img, model):
+    img = model.enhance(img)
+    return img
+
+
 supported_enhancers = {
+    "CodeFormer": ("./assets/pretrained_models/codeformer.onnx", codeformer_runner),
     "GFPGAN": ("./assets/pretrained_models/GFPGANv1.4.pth", gfpgan_runner),
     "REAL-ESRGAN 2x": ("./assets/pretrained_models/RealESRGAN_x2.pth", realesrgan_runner),
     "REAL-ESRGAN 4x": ("./assets/pretrained_models/RealESRGAN_x4.pth", realesrgan_runner),
@@ -39,7 +45,9 @@ def load_face_enhancer_model(name='GFPGAN', device="cpu"):
     if name in supported_enhancers.keys():
         model_path, model_runner = supported_enhancers.get(name)
         model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), model_path)
-    if name == 'GFPGAN':
+    if name == 'CodeFormer':
+        model = CodeFormerEnhancer(model_path=model_path, device=device)
+    elif name == 'GFPGAN':
         model = gfpgan.GFPGANer(model_path=model_path, upscale=1, device=device)
     elif name == 'REAL-ESRGAN 2x':
         model = RealESRGAN(device, scale=2)
