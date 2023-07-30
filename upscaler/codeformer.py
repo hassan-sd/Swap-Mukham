@@ -18,7 +18,7 @@ class CodeFormerEnhancer:
         providers = ["CPUExecutionProvider"]
         if device == 'cuda':
             providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "DEFAULT"}),"CPUExecutionProvider"]
-        self.session = onnxruntime.InferenceSession("codeformer.onnx", sess_options=session_options, providers=providers)
+        self.session = onnxruntime.InferenceSession(model_path, sess_options=session_options, providers=providers)
 
     def enhance(self, img, w=0.9):
         img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
