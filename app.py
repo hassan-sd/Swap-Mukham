@@ -18,7 +18,7 @@ from tqdm import tqdm
 import concurrent.futures
 from moviepy.editor import VideoFileClip
 
-from nsfw_detector import get_nsfw_detector
+from nsfw_checker import NSFWChecker
 from face_swapper import Inswapper, paste_to_whole
 from face_analyser import detect_conditions, get_analysed_data, swap_options_list
 from face_parsing import init_parsing_model, get_parsed_mask, mask_regions, mask_regions_to_list
@@ -118,10 +118,10 @@ def load_face_parser_model(path="./assets/pretrained_models/79999_iter.pth"):
     if FACE_PARSER is None:
         FACE_PARSER = init_parsing_model(path, device=device)
 
-def load_nsfw_detector_model(path="./assets/pretrained_models/nsfwmodel_281.pth"):
+def load_nsfw_detector_model(path="./assets/pretrained_models/open-nsfw.onnx"):
     global NSFW_DETECTOR
     if NSFW_DETECTOR is None:
-        NSFW_DETECTOR = get_nsfw_detector(model_path=path, device=device)
+        NSFW_DETECTOR = NSFWChecker(model_path=path, providers=PROVIDER)
 
 
 load_face_analyser_model()
