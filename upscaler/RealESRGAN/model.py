@@ -46,7 +46,10 @@ class RealESRGAN:
             cached_download(config_file_url, cache_dir=cache_dir, force_filename=local_filename)
             print('Weights downloaded to:', os.path.join(cache_dir, local_filename))
 
-        loadnet = torch.load(model_path)
+        if device == 'cpu':
+            loadnet = torch.load(model_path, map_location='cpu')
+        else:
+            loadnet = torch.load(model_path)
         if 'params' in loadnet:
             self.model.load_state_dict(loadnet['params'], strict=True)
         elif 'params_ema' in loadnet:

@@ -62,7 +62,11 @@ transform = transforms.Compose([
 def init_parsing_model(model_path, device="cpu"):
     net = BiSeNet(19)
     net.to(device)
-    net.load_state_dict(torch.load(model_path))
+    if device == 'cpu':
+        model = torch.load(model_path, map_location='cpu')
+    else:
+        model = torch.load(model_path)
+    net.load_state_dict(model)
     net.eval()
     return net
 
