@@ -5,6 +5,8 @@
 
 A simple face swapper based on insightface inswapper heavily inspired by roop.
 
+## Check [latest Swap-Mukham WIP repository](https://github.com/harisreedhar/Swap-Mukham/tree/new-wip)
+
 ## Features
 - Easy to use Gradio gui
 - Support Image, Video, Directory inputs
