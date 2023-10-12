@@ -1,10 +1,20 @@
-gradio>=3.33.1
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+gfpgan==1.3.8
+gradio==3.40.1
 insightface==0.7.3
 moviepy>=1.0.3
-numpy
+numpy==1.24.3
 onnx==1.14.0
-onnxruntime-gpu==1.15.0
-opencv-python>=4.7.0.72
-opencv-python-headless>=4.7.0.72
-gfpgan==1.3.8
-
+onnxruntime==1.15.1; python_version != '3.9' and sys_platform == 'darwin' and platform_machine != 'arm64'
+onnxruntime-coreml==1.13.1; python_version == '3.9' and sys_platform == 'darwin' and platform_machine != 'arm64'
+onnxruntime-gpu==1.15.1; sys_platform != 'darwin'
+onnxruntime-silicon==1.13.1; sys_platform == 'darwin' and platform_machine == 'arm64'
+opencv-python==4.8.0.74
+opennsfw2==0.10.2
+pillow==10.0.0
+protobuf==4.23.4
+psutil==5.9.5
+realesrgan==0.3.0
+tensorflow
+tqdm==4.65.0
