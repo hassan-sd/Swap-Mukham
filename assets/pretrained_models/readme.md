@@ -7,4 +7,3 @@
 - [RealESRGAN_x4.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth)
 - [RealESRGAN_x8.pth](https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x8.pth)
 - [codeformer.onnx](https://huggingface.co/bluefoxcreation/Codeformer-ONNX/resolve/main/codeformer.onnx)
-- [open-nsfw.onnx](https://huggingface.co/bluefoxcreation/open-nsfw/resolve/main/open-nsfw.onnx)
