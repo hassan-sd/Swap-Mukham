@@ -1,1 +1,0 @@
-from . opennsfw import NSFWChecker
