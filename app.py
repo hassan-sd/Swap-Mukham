@@ -186,7 +186,7 @@ def process(
 
     ## ------------------------------ PREPARE INPUTS & LOAD MODELS ------------------------------
 
-    l
+    
     yield "### \n ⌛ Loading face analyser model...", *ui_before()
     load_face_analyser_model()
 
